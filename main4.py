@@ -21,7 +21,7 @@ computed as:
     J = Σₜ (x[t]ᵀ Q_lqr x[t] + u[t]ᵀ R_lqr u[t]) + x[T]ᵀ Q_lqr x[T]
 are returned. For each filter the candidate robust parameter with the lowest average
 LQR cost is chosen as “optimal.” Finally, the performance (terminal MSE and cost)
-of each filter using its optimal robust parameter is saved for comparison.
+of each filter using its optimal robust parameter is saved for comparison and summarized.
 
 Usage example:
     python main4.py --dist normal --noise_dist normal --num_sim 500 --horizon 20 --num_exp 10
@@ -128,7 +128,7 @@ def is_positive_definite(M, tol=1e-9):
     except np.linalg.LinAlgError:
         return False
 
-def enforce_positive_definiteness(Sigma, epsilon=1e-6):
+def enforce_positive_definiteness(Sigma, epsilon=1e-4):
     Sigma = (Sigma + Sigma.T) / 2
     eigvals = np.linalg.eigvalsh(Sigma)
     min_eig = np.min(eigvals)
@@ -159,7 +159,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     np.random.seed(seed_base + exp_idx)
     
     # System dimensions.
-    nx = 4; nw = 4; ny = 2; dt = 0.2
+    nx = 4; nw = 4; ny = 2; dt = 0.5
     # Correct A matrix for tracking [x1, x2, x1dot, x2dot]:
     A = np.array([[1, 0, dt, 0],
                   [0, 1, 0, dt],
@@ -207,7 +207,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         raise ValueError("Unsupported measurement noise distribution.")
     
     # --- Generate Data for EM ---
-    N_data = 30
+    N_data = 20
     _, y_all_em = generate_data(N_data, nx, ny, A, C,
                                 mu_w, Sigma_w, mu_v, M,
                                 x0_mean, x0_cov, x0_max, x0_min,
@@ -290,7 +290,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
     def run_simulation_inf_kf(sim_idx_local):
         estimator = KF_inf(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -305,7 +305,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
     def run_simulation_inf_drkf(sim_idx_local):
         estimator = DRKF_ours_inf(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -321,7 +321,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
     def run_simulation_bcot(sim_idx_local):
         estimator = BCOT(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -337,7 +337,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
     def run_simulation_kl(sim_idx_local):
         kl_maxit = 2
         estimator = KL(
@@ -354,7 +354,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
     def run_simulation_risk(sim_idx_local):
         estimator = RiskSensitive(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -373,7 +373,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
-    
+
+    # Run simulations for each filter.
     results_finite = [run_simulation_finite(i) for i in range(num_sim)]
     mse_finite_all, cost_finite_all = zip(*results_finite)
     mse_mean_finite = np.mean(np.array(mse_finite_all), axis=0)
@@ -404,6 +405,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     mse_mean_risk = np.mean(np.array(mse_risk_all), axis=0)
     cost_mean_risk = np.mean(np.array(cost_risk_all))
     
+    # Return candidate results for this robust value.
     return {
         'finite': mse_mean_finite,
         'inf': mse_mean_inf,
@@ -425,7 +427,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
 def main(dist, noise_dist, num_sim, T, num_exp):
     seed_base = 2024
     # Define candidate robust parameter values.
-    robust_vals = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+    robust_vals = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
     all_results = {}
     for robust_val in robust_vals:
         print(f"Running experiments for robust parameter = {robust_val}")
@@ -433,98 +435,86 @@ def main(dist, noise_dist, num_sim, T, num_exp):
             delayed(run_experiment)(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, 0)
             for exp_idx in range(num_exp)
         )
-        all_finite = np.array([exp['finite'] for exp in experiments])
-        all_inf = np.array([exp['inf'] for exp in experiments])
-        all_drkf = np.array([exp['drkf_inf'] for exp in experiments])
-        all_bcot = np.array([exp['bcot'] for exp in experiments])
-        all_kl = np.array([exp['kl'] for exp in experiments])
-        all_risk = np.array([exp['risk'] for exp in experiments])
-        all_cost = [exp['cost'] for exp in experiments]
-        
-        final_mean_finite = np.mean(all_finite, axis=0)
-        final_std_finite = np.std(all_finite, axis=0)
-        final_mean_inf = np.mean(all_inf, axis=0)
-        final_std_inf = np.std(all_inf, axis=0)
-        final_mean_drkf = np.mean(all_drkf, axis=0)
-        final_std_drkf = np.std(all_drkf, axis=0)
-        final_mean_bcot = np.mean(all_bcot, axis=0)
-        final_std_bcot = np.std(all_bcot, axis=0)
-        final_mean_kl = np.mean(all_kl, axis=0)
-        final_std_kl = np.std(all_kl, axis=0)
-        final_mean_risk = np.mean(all_risk, axis=0)
-        final_std_risk = np.std(all_risk, axis=0)
-        
+        # Collect terminal MSE and cost for each filter.
         cost_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
-        final_cost = {}
-        for key in cost_keys:
-            final_cost[key] = np.mean([exp_cost[key] for exp_cost in all_cost])
-        
-        results_path = "./results/estimator2/"
-        if not os.path.exists(results_path):
-            os.makedirs(results_path)
-        suffix = f"{dist}_{noise_dist}_robust_{robust_val}"
-        save_data(os.path.join(results_path, f'kf_mse_mean_{suffix}.pkl'), final_mean_finite)
-        save_data(os.path.join(results_path, f'kf_mse_std_{suffix}.pkl'), final_std_finite)
-        save_data(os.path.join(results_path, f'kf_inf_mse_mean_{suffix}.pkl'), final_mean_inf)
-        save_data(os.path.join(results_path, f'kf_inf_mse_std_{suffix}.pkl'), final_std_inf)
-        save_data(os.path.join(results_path, f'kf_drkf_inf_mse_mean_{suffix}.pkl'), final_mean_drkf)
-        save_data(os.path.join(results_path, f'kf_drkf_inf_mse_std_{suffix}.pkl'), final_std_drkf)
-        save_data(os.path.join(results_path, f'bcot_mse_mean_{suffix}.pkl'), final_mean_bcot)
-        save_data(os.path.join(results_path, f'bcot_mse_std_{suffix}.pkl'), final_std_bcot)
-        save_data(os.path.join(results_path, f'kl_mse_mean_{suffix}.pkl'), final_mean_kl)
-        save_data(os.path.join(results_path, f'kl_mse_std_{suffix}.pkl'), final_std_kl)
-        save_data(os.path.join(results_path, f'risk_sensitive_mse_mean_{suffix}.pkl'), final_mean_risk)
-        save_data(os.path.join(results_path, f'risk_sensitive_mse_std_{suffix}.pkl'), final_std_risk)
-        save_data(os.path.join(results_path, f'lqr_cost_{suffix}.pkl'), final_cost)
-        
+        all_cost = [exp['cost'] for exp in experiments]
+        all_mse = {key: [] for key in cost_keys}
+        for exp in experiments:
+            for key in cost_keys:
+                # Access mse values directly (instead of exp['mse'][key])
+                all_mse[key].append(exp[key][-1])
+        final_cost = {key: np.mean([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
+        final_cost_std = {key: np.std([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
+        final_mse = {key: np.mean(all_mse[key]) for key in cost_keys}
+        final_mse_std = {key: np.std(all_mse[key]) for key in cost_keys}
         all_results[robust_val] = {
-            'mse': {
-                'finite': final_mean_finite,
-                'inf': final_mean_inf,
-                'drkf_inf': final_mean_drkf,
-                'bcot': final_mean_bcot,
-                'kl': final_mean_kl,
-                'risk': final_mean_risk
-            },
-            'cost': final_cost
+            'cost': final_cost,
+            'cost_std': final_cost_std,
+            'mse': final_mse,
+            'mse_std': final_mse_std
         }
-        print(f"Completed robust parameter = {robust_val}\n")
+        print(f"Candidate robust parameter {robust_val}: Cost = {final_cost}, Cost std = {final_cost_std}, Terminal MSE = {final_mse}, MSE std = {final_mse_std}")
     
-    # Now, for each filter, choose the robust parameter that minimizes the average LQR cost.
-    # We assume that all_results is a dictionary keyed by robust value, each containing a 'cost' dict.
+    # Now, for each filter, choose the candidate robust parameter that minimizes the average LQR cost.
+    # For standard KF (finite and inf), the robust parameter is not used; we mark them as "N/A".
     filters = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
     optimal_results = {}
     for f in filters:
-        best_val = None
-        best_cost = np.inf
-        for robust_val, res in all_results.items():
-            current_cost = res['cost'][f]
-            if current_cost < best_cost:
-                best_cost = current_cost
-                best_val = robust_val
-        optimal_results[f] = {
-            'robust_val': best_val,
-            'cost': best_cost,
-            'mse': all_results[best_val]['mse'][f]
-        }
-        print(f"Optimal robust parameter for {f}: {best_val} with cost {best_cost}")
+        if f in ['finite', 'inf']:
+            # For standard KF, choose an arbitrary candidate (they do not vary with robust parameter)
+            # and mark the robust parameter as "N/A".
+            candidate = list(all_results.values())[0]
+            optimal_results[f] = {
+                'robust_val': "N/A",
+                'cost': candidate['cost'][f],
+                'cost_std': candidate['cost_std'][f],
+                'mse': candidate['mse'][f],
+                'mse_std': candidate['mse_std'][f]
+            }
+        else:
+            best_val = None
+            best_cost = np.inf
+            for robust_val, res in all_results.items():
+                current_cost = res['cost'][f]
+                if current_cost < best_cost:
+                    best_cost = current_cost
+                    best_val = robust_val
+            optimal_results[f] = {
+                'robust_val': best_val,
+                'cost': best_cost,
+                'cost_std': all_results[best_val]['cost_std'][f],
+                'mse': all_results[best_val]['mse'][f],
+                'mse_std': all_results[best_val]['mse_std'][f]
+            }
+        print(f"Optimal robust parameter for {f}: {optimal_results[f]['robust_val']} with cost {optimal_results[f]['cost']:.4f} (std {optimal_results[f]['cost_std']:.4f})")
+    
+    # Sort optimal results by increasing LQR cost.
+    sorted_optimal = sorted(optimal_results.items(), key=lambda item: item[1]['cost'])
+    print("\nSummary of Optimal Results (sorted by LQR cost):")
+    for filt, info in sorted_optimal:
+        print(f"{filt}: Optimal robust parameter = {info['robust_val']}, "
+              f"LQR cost = {info['cost']:.4f} (std {info['cost_std']:.4f}), Terminal MSE = {info['mse']:.4f} (std {info['mse_std']:.4f})")
     
     results_path = "./results/estimator2/"
-    save_data(os.path.join(results_path, f'optimal_results_{dist}_{noise_dist}.pkl'), optimal_results)
+    if not os.path.exists(results_path):
+        os.makedirs(results_path)
     save_data(os.path.join(results_path, f'overall_results_{dist}_{noise_dist}.pkl'), all_results)
+    save_data(os.path.join(results_path, f'optimal_results_{dist}_{noise_dist}.pkl'), optimal_results)
     print("LQR with state estimation experiments completed for all robust parameters.")
-    
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dist', default="normal", type=str,
                         help="Disturbance distribution (normal or quadratic)")
     parser.add_argument('--noise_dist', default="normal", type=str,
                         help="Measurement noise distribution (normal or quadratic)")
-    parser.add_argument('--num_sim', default=500, type=int,
+    parser.add_argument('--num_sim', default=1, type=int,
                         help="Number of simulation runs per experiment")
     parser.add_argument('--horizon', default=20, type=int,
                         help="Time horizon T")
-    parser.add_argument('--num_exp', default=10, type=int,
+    parser.add_argument('--num_exp', default=20, type=int,
                         help="Number of independent experiments")
     args = parser.parse_args()
     main(args.dist, args.noise_dist, args.num_sim, args.horizon, args.num_exp)
