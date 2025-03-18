@@ -42,6 +42,7 @@ from LQR_with_estimator.DRKF_ours_inf import DRKF_ours_inf
 from LQR_with_estimator.BCOT import BCOT 
 from LQR_with_estimator.KL import KL
 from LQR_with_estimator.risk_sensitive import RiskSensitive
+from scipy.linalg import expm
 
 # --- Distribution Sampling Functions (for true data generation) ---
 def normal(mu, Sigma, N=1):
@@ -158,7 +159,7 @@ def compute_lqr_cost(result, Q_lqr, R_lqr, K_lqr):
 def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, _unused):
     np.random.seed(seed_base + exp_idx)
     
-    # System dimensions.
+    # # System dimensions.
     nx = 4; nw = 4; ny = 2; dt = 0.5
     # Correct A matrix for tracking [x1, x2, x1dot, x2dot]:
     A = np.array([[1, 0, dt, 0],
