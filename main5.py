@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main4.py
+main5.py
 
 This experiment runs a closed–loop simulation where an LQR controller is applied to the system:
     xₜ₊₁ = A xₜ + B uₜ + wₜ,    yₜ = C xₜ + vₜ,
@@ -13,24 +13,23 @@ with B defined as:
 A steady–state LQR gain is computed offline using specified cost matrices Q_lqr and R_lqr.
 The nominal parameters are obtained via EM (covariances only) while the known mean
 vectors (x0_mean, mu_w, mu_v) are used for the means.
-Then, six filters (KF, KF_inf, DRKF, BCOT, KL, and risk–sensitive filter)
-(from the folder LQR_with_estimator) are run in closed–loop with exactly the same controller
-for each candidate robust parameter value.
-For each simulation run, the mean squared error (MSE) trajectory and the LQR cost
-computed as:
-    J = Σₜ (x[t]ᵀ Q_lqr x[t] + u[t]ᵀ R_lqr u[t]) + x[T]ᵀ Q_lqr x[T]
-are returned. For each filter the candidate robust parameter with the lowest average
-LQR cost is chosen as “optimal.” Finally, the performance (terminal MSE and cost)
-of each filter using its optimal robust parameter is saved for comparison and summarized.
+
+In this experiment, the robust parameter is fixed to 1.0. We study the time scalability of
+each filter by varying the time horizon T over the values: 2, 5, 10, …, 50.
+For each T, 10 independent experiments are run.
+In each experiment, the computation time for each filter is measured.
+Finally, for each time horizon, the mean and standard deviation of the computation time
+(for each filter) are saved in the "estimator5" folder.
 
 Usage example:
-    python main4.py --dist normal --noise_dist normal --num_sim 500 --horizon 20 --num_exp 10
+    python main5.py --dist normal --noise_dist normal --num_sim 1 --num_exp 10
 """
 
 import numpy as np
 import argparse
 import os
 import pickle
+import time
 from joblib import Parallel, delayed
 from pykalman import KalmanFilter
 from scipy.linalg import solve_discrete_are
@@ -146,12 +145,12 @@ def compute_lqr_gain(A, B, Q_lqr, R_lqr):
 def compute_lqr_cost(result, Q_lqr, R_lqr, K_lqr):
     x = result['state_traj']
     x_est = result['est_state_traj']
-    T = x.shape[0] - 1
+    T_sim = x.shape[0] - 1
     cost = 0.0
-    for t in range(T):
+    for t in range(T_sim):
         u = -K_lqr @ x_est[t]
         cost += (x[t].T @ Q_lqr @ x[t])[0,0] + (u.T @ R_lqr @ u)[0,0]
-    cost += (x[T].T @ Q_lqr @ x[T])[0,0]
+    cost += (x[T_sim].T @ Q_lqr @ x[T_sim])[0,0]
     return cost
 
 # --- Experiment Function (one independent experiment) ---
@@ -160,7 +159,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     
     # System dimensions.
     nx = 4; nw = 4; ny = 2; dt = 0.5
-    # Correct A matrix for tracking [x1, x2, x1dot, x2dot]:
+    # A matrix for tracking [x1, x2, x1dot, x2dot]:
     A = np.array([[1, 0, dt, 0],
                   [0, 1, 0, dt],
                   [0, 0, 1, 0],
@@ -222,7 +221,6 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     Sigma_v_hat = np.eye(ny)
     Sigma_x0_hat = x0_cov.copy()
     
-    from pykalman import KalmanFilter
     kf_em = KalmanFilter(transition_matrices=A,
                            observation_matrices=C,
                            transition_covariance=Sigma_w_hat,
@@ -374,38 +372,58 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
         return res['mse'], cost
 
-    # Run simulations for each filter.
+    # --- Run simulations for each filter and measure computation time ---
+    # For each filter, run num_sim simulations and time the block.
+    start = time.perf_counter()
     results_finite = [run_simulation_finite(i) for i in range(num_sim)]
+    time_finite = time.perf_counter() - start
+
+    start = time.perf_counter()
+    results_inf = [run_simulation_inf_kf(i) for i in range(num_sim)]
+    time_inf = time.perf_counter() - start
+
+    start = time.perf_counter()
+    results_drkf = [run_simulation_inf_drkf(i) for i in range(num_sim)]
+    time_drkf = time.perf_counter() - start
+
+    start = time.perf_counter()
+    results_bcot = [run_simulation_bcot(i) for i in range(num_sim)]
+    time_bcot = time.perf_counter() - start
+
+    start = time.perf_counter()
+    results_kl = [run_simulation_kl(i) for i in range(num_sim)]
+    time_kl = time.perf_counter() - start
+
+    start = time.perf_counter()
+    results_risk = [run_simulation_risk(i) for i in range(num_sim)]
+    time_risk = time.perf_counter() - start
+
+    # Compute mean simulation outputs (for completeness) as in previous experiments.
     mse_finite_all, cost_finite_all = zip(*results_finite)
     mse_mean_finite = np.mean(np.array(mse_finite_all), axis=0)
     cost_mean_finite = np.mean(np.array(cost_finite_all))
-    
-    results_inf = [run_simulation_inf_kf(i) for i in range(num_sim)]
+
     mse_inf_all, cost_inf_all = zip(*results_inf)
     mse_mean_inf = np.mean(np.array(mse_inf_all), axis=0)
     cost_mean_inf = np.mean(np.array(cost_inf_all))
-    
-    results_drkf = [run_simulation_inf_drkf(i) for i in range(num_sim)]
+
     mse_drkf_all, cost_drkf_all = zip(*results_drkf)
     mse_mean_drkf = np.mean(np.array(mse_drkf_all), axis=0)
     cost_mean_drkf = np.mean(np.array(cost_drkf_all))
-    
-    results_bcot = [run_simulation_bcot(i) for i in range(num_sim)]
+
     mse_bcot_all, cost_bcot_all = zip(*results_bcot)
     mse_mean_bcot = np.mean(np.array(mse_bcot_all), axis=0)
     cost_mean_bcot = np.mean(np.array(cost_bcot_all))
-    
-    results_kl = [run_simulation_kl(i) for i in range(num_sim)]
+
     mse_kl_all, cost_kl_all = zip(*results_kl)
     mse_mean_kl = np.mean(np.array(mse_kl_all), axis=0)
     cost_mean_kl = np.mean(np.array(cost_kl_all))
-    
-    results_risk = [run_simulation_risk(i) for i in range(num_sim)]
+
     mse_risk_all, cost_risk_all = zip(*results_risk)
     mse_mean_risk = np.mean(np.array(mse_risk_all), axis=0)
     cost_mean_risk = np.mean(np.array(cost_risk_all))
     
-    # Return candidate results for this robust value.
+    # Return simulation results and timing data.
     return {
         'finite': mse_mean_finite,
         'inf': mse_mean_inf,
@@ -420,89 +438,52 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             'bcot': cost_mean_bcot,
             'kl': cost_mean_kl,
             'risk': cost_mean_risk
+        },
+        'time': {
+            'finite': time_finite,
+            'inf': time_inf,
+            'drkf_inf': time_drkf,
+            'bcot': time_bcot,
+            'kl': time_kl,
+            'risk': time_risk
         }
     }
 
-# --- Main Routine ---
-def main(dist, noise_dist, num_sim, T, num_exp):
+# --- Main Routine for Scalability Experiment ---
+def main(dist, noise_dist, num_sim, num_exp):
     seed_base = 2024
-    # Define candidate robust parameter values.
-    robust_vals = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
-    all_results = {}
-    for robust_val in robust_vals:
-        print(f"Running experiments for robust parameter = {robust_val}")
+    robust_val = 1.0  # Fixed robust parameter.
+    # Define time horizon values.
+    T_values = [2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+    scalability_results = {}
+    
+    # For each time horizon T, run num_exp experiments in parallel.
+    for T in T_values:
+        print(f"\nRunning experiments for Time horizon T = {T}")
         experiments = Parallel(n_jobs=-1)(
             delayed(run_experiment)(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, 0)
             for exp_idx in range(num_exp)
         )
-        # Collect terminal MSE and cost for each filter.
-        cost_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
-        all_cost = [exp['cost'] for exp in experiments]
-        all_mse = {key: [] for key in cost_keys}
+        # Aggregate computation times for each filter.
+        filter_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
+        times = {key: [] for key in filter_keys}
         for exp in experiments:
-            for key in cost_keys:
-                # Access mse values directly (instead of exp['mse'][key])
-                all_mse[key].append(exp[key][-1])
-        final_cost = {key: np.mean([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
-        final_cost_std = {key: np.std([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
-        final_mse = {key: np.mean(all_mse[key]) for key in cost_keys}
-        final_mse_std = {key: np.std(all_mse[key]) for key in cost_keys}
-        all_results[robust_val] = {
-            'cost': final_cost,
-            'cost_std': final_cost_std,
-            'mse': final_mse,
-            'mse_std': final_mse_std
-        }
-        print(f"Candidate robust parameter {robust_val}: Cost = {final_cost}, Cost std = {final_cost_std}, Terminal MSE = {final_mse}, MSE std = {final_mse_std}")
+            for key in filter_keys:
+                times[key].append(exp['time'][key])
+        # Compute mean and std for each filter.
+        filter_times = {}
+        for key in filter_keys:
+            filter_times[key] = {'mean_time': np.mean(times[key]),
+                                 'std_time': np.std(times[key])}
+            print(f"T = {T}, Filter {key}: Mean time = {filter_times[key]['mean_time']:.4f} sec, Std = {filter_times[key]['std_time']:.4f} sec")
+        scalability_results[T] = filter_times
     
-    # Now, for each filter, choose the candidate robust parameter that minimizes the average LQR cost.
-    # For standard KF (finite and inf), the robust parameter is not used; we mark them as "N/A".
-    filters = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
-    optimal_results = {}
-    for f in filters:
-        if f in ['finite', 'inf']:
-            # For standard KF, choose an arbitrary candidate (they do not vary with robust parameter)
-            # and mark the robust parameter as "N/A".
-            candidate = list(all_results.values())[0]
-            optimal_results[f] = {
-                'robust_val': "N/A",
-                'cost': candidate['cost'][f],
-                'cost_std': candidate['cost_std'][f],
-                'mse': candidate['mse'][f],
-                'mse_std': candidate['mse_std'][f]
-            }
-        else:
-            best_val = None
-            best_cost = np.inf
-            for robust_val, res in all_results.items():
-                current_cost = res['cost'][f]
-                if current_cost < best_cost:
-                    best_cost = current_cost
-                    best_val = robust_val
-            optimal_results[f] = {
-                'robust_val': best_val,
-                'cost': best_cost,
-                'cost_std': all_results[best_val]['cost_std'][f],
-                'mse': all_results[best_val]['mse'][f],
-                'mse_std': all_results[best_val]['mse_std'][f]
-            }
-        print(f"Optimal robust parameter for {f}: {optimal_results[f]['robust_val']} with cost {optimal_results[f]['cost']:.4f} (std {optimal_results[f]['cost_std']:.4f})")
-    
-    # Sort optimal results by increasing LQR cost.
-    sorted_optimal = sorted(optimal_results.items(), key=lambda item: item[1]['cost'])
-    print("\nSummary of Optimal Results (sorted by LQR cost):")
-    for filt, info in sorted_optimal:
-        print(f"{filt}: Optimal robust parameter = {info['robust_val']}, "
-              f"LQR cost = {info['cost']:.4f} (std {info['cost_std']:.4f}), Terminal MSE = {info['mse']:.4f} (std {info['mse_std']:.4f})")
-    
-    results_path = "./results/estimator2/"
+    # Save scalability results in the estimator5 folder.
+    results_path = "./results/estimator5/"
     if not os.path.exists(results_path):
         os.makedirs(results_path)
-    save_data(os.path.join(results_path, f'overall_results_{dist}_{noise_dist}.pkl'), all_results)
-    save_data(os.path.join(results_path, f'optimal_results_{dist}_{noise_dist}.pkl'), optimal_results)
-    print("LQR with state estimation experiments completed for all robust parameters.")
-
-
+    save_data(os.path.join(results_path, f'scalability_results_{dist}_{noise_dist}.pkl'), scalability_results)
+    print("\nScalability experiments completed. Results saved in estimator5 folder.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -512,9 +493,7 @@ if __name__ == "__main__":
                         help="Measurement noise distribution (normal or quadratic)")
     parser.add_argument('--num_sim', default=1, type=int,
                         help="Number of simulation runs per experiment")
-    parser.add_argument('--horizon', default=20, type=int,
-                        help="Time horizon T")
-    parser.add_argument('--num_exp', default=20, type=int,
-                        help="Number of independent experiments")
+    parser.add_argument('--num_exp', default=10, type=int,
+                        help="Number of independent experiments per time horizon")
     args = parser.parse_args()
-    main(args.dist, args.noise_dist, args.num_sim, args.horizon, args.num_exp)
+    main(args.dist, args.noise_dist, args.num_sim, args.num_exp)
