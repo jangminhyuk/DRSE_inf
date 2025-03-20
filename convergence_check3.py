@@ -275,10 +275,10 @@ def compute_theta_max(A, C, Sigma_w_nom, Sigma_v_nom, phi_T, q=100, T=None):
         term = np.sqrt(trace_P / (1 - phi_T*lambda_max))#(1.0 / lambda_min) - phi_T
         
         if term <= 0:
-            print("Warning: (1/lambda_min - phi_T) is not positive. Cannot compute theta_max.")
+            print("Warning: np.sqrt(trace_P / (1 - phi_T*lambda_max)) is not positive. Cannot compute theta_max.")
             return None
         
-        theta_max = term - np.sqrt(trace_P) #np.sqrt(1.0 / term) - np.sqrt(trace_P)
+        theta_max = term - np.sqrt(trace_P)
         print(q_, theta_max)
         
     if theta_max > 0:
@@ -297,40 +297,61 @@ def compute_theta_max(A, C, Sigma_w_nom, Sigma_v_nom, phi_T, q=100, T=None):
 # -------------------------------------------------------
 def run_dr_kf_once(n=10, m=10, steps=200, N_samples=20, T=20, dist_type="normal", tol=1e-4):
     # Regenerate system matrices until detectability and controllability are met.
-    # while True:
-    #     A = np.random.randn(n, n)
-    #     Wr = np.random.randn(n, n)
-    #     Sigma_w_true = Wr @ Wr.T + 1e-4 * np.eye(n)
-    #     mu_w = np.zeros((n, 1))
-    #     _, Sigma_w_nom = gen_sample_dist_inf("normal", N_samples, mu=mu_w, Sigma=Sigma_w_true)
-    #     Sigma_w_nom += 1e-4 * np.eye(n)
+    while True:
+        A = np.random.randn(n, n)
+        Wr = np.random.randn(n, n)
+        Sigma_w_true = Wr @ Wr.T + 1e-4 * np.eye(n)
+        mu_w = np.zeros((n, 1))
+        _, Sigma_w_nom = gen_sample_dist_inf("normal", N_samples, mu=mu_w, Sigma=Sigma_w_true)
+        Sigma_w_nom += 1e-4 * np.eye(n)
         
-    #     C = np.random.randn(m, n)
+        C = np.random.randn(m, n)
         
-    #     Vr = np.random.randn(m, m)
-    #     Sigma_v_true = Vr @ Vr.T + 1e-4 * np.eye(m)
-    #     mu_v = np.zeros((m, 1))
-    #     _, Sigma_v_nom = gen_sample_dist_inf("normal", N_samples, mu=mu_v, Sigma=Sigma_v_true)
-    #     Sigma_v_nom += 1e-4 * np.eye(m)
+        Vr = np.random.randn(m, m)
+        Sigma_v_true = Vr @ Vr.T + 1e-4 * np.eye(m)
+        mu_v = np.zeros((m, 1))
+        _, Sigma_v_nom = gen_sample_dist_inf("normal", N_samples, mu=mu_v, Sigma=Sigma_v_true)
+        Sigma_v_nom += 1e-4 * np.eye(m)
         
-    #     O = control.obsv(A, C)
-    #     det_ok = (np.linalg.matrix_rank(O) == n)
-    #     try:
-    #         B = np.linalg.cholesky(Sigma_w_true)
-    #     except np.linalg.LinAlgError:
-    #         det_ok = False
-    #     CC = control.ctrb(A, B)
-    #     stab_ok = (np.linalg.matrix_rank(CC) == n)
-    #     if det_ok and stab_ok:
-    #         break
+        O = control.obsv(A, C)
+        det_ok = (np.linalg.matrix_rank(O) == n)
+        try:
+            B = np.linalg.cholesky(Sigma_w_true)
+        except np.linalg.LinAlgError:
+            det_ok = False
+        CC = control.ctrb(A, B)
+        stab_ok = (np.linalg.matrix_rank(CC) == n)
+        if det_ok and stab_ok:
+            break
 
     ### !!! USE SYSTEM FROM the Risk-sensitive paper!        
-    A = np.array([[0.1, 1], [0, 1.2]])
-    C = np.array([[1, -1]])
-    Sigma_w_nom = np.eye(n)
-    Sigma_v_nom = np.eye(m)
-    Sigma_w_true = np.eye(n)
-    Sigma_v_true = np.eye(m)
+    # A = np.array([[0.1, 1], [0, 1.2]])
+    # C = np.array([[1, -1]])
+    
+    # Sigma_w_nom = np.eye(n)
+    # Sigma_v_nom = np.eye(m)
+    # Sigma_w_true = np.eye(n)
+    # Sigma_v_true = np.eye(m)
+    
+    ##
+    # nx = 4; nw = 4; ny = 2; dt = 0.5
+    # A = np.array([[1, 0, dt, 0],
+    #               [0, 1, 0, dt],
+    #               [0, 0, 1, 0],
+    #               [0, 0, 0, 1]])
+    # C = np.array([[1, 0, 0, 0],
+    #               [0, 1, 0, 0]])
+    # system_data = (A, C)
+    
+    # # B matrix for control.
+    # B = np.array([[0, 0],
+    #               [0, 0],
+    #               [1, 0],
+    #               [0, 1]])
+    # Sigma_w_nom = np.eye(nx)
+    # Sigma_v_nom = np.eye(ny)
+    # Sigma_w_true = np.eye(nx)
+    # Sigma_v_true = np.eye(ny)
     
     # Compute phi_T and theta_max using a chosen horizon T.
     matrices = compute_matrices(T, A, Sigma_w_nom, C, Sigma_v_nom)
@@ -379,11 +400,11 @@ def run_dr_kf_once(n=10, m=10, steps=200, N_samples=20, T=20, dist_type="normal"
 # -------------------------------------------------------
 if __name__=="__main__":
     tol = 1e-4  # convergence tolerance for final convergence norm
-    n_experiments = 1
+    n_experiments = 20
     
     for exp_num in range(n_experiments):
         print(f"\n=== Experiment {exp_num+1} ===")
-        res = run_dr_kf_once(n=2, m=1, steps=200, N_samples=20, T=8, dist_type="normal")
+        res = run_dr_kf_once(n=10, m=10, steps=200, N_samples=20, T=20, dist_type="normal")
         final_norm = res["conv_norms"][-1]
         final_trace = np.trace(res["posterior_list"][-1])
         converged = final_norm < tol
