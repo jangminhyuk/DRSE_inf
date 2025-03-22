@@ -3,6 +3,7 @@ import cvxpy as cp
 import mosek
 import control
 from joblib import Parallel, delayed
+import matplotlib.pyplot as plt  # <-- For plotting
 
 np.random.seed(42)
 
@@ -235,31 +236,11 @@ def compute_theta_max(A, C, Sigma_w_nom, Sigma_v_nom, phi_T, q=100, T=None):
 
 def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1e-4):
     try:
-        # Regenerate system matrices until (A, C) is observable and (A, sqrt(Sigma_w_nom)) is reachable.
-        while True:
-            A = np.random.randn(n, n)
-            Wr = np.random.randn(n, n)
-            Sigma_w_nom = Wr @ Wr.T + 1e-4 * np.eye(n)
-            C = np.random.randn(m, n)
-            Vr = np.random.randn(m, m)
-            Sigma_v_nom = Vr @ Vr.T + 1e-4 * np.eye(m)
-            
-            # Check observability of (A, C).
-            O = control.obsv(A, C)
-            observable = (np.linalg.matrix_rank(O) == n)
-            
-            # Check reachability of (A, sqrt(Sigma_w_nom)).
-            try:
-                B = np.linalg.cholesky(Sigma_w_nom)
-            except np.linalg.LinAlgError:
-                reachable = False
-            else:
-                CC = control.ctrb(A, B)
-                reachable = (np.linalg.matrix_rank(CC) == n)
-            
-            if observable and reachable:
-                break
-
+        A = np.array([[0.1, 1], [0, 1.2]])
+        Sigma_w_nom = np.eye(2)
+        C = np.array([[1, -1]])
+        Sigma_v_nom = np.eye(1)
+        
         # Compute matrices needed for phi_T.
         matrices = compute_matrices(T, A, Sigma_w_nom, C, Sigma_v_nom)
         tilde_phi_T = matrices["tilde_phi_T"]
@@ -269,14 +250,11 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
         if theta_max is None or theta_max <= 0 or np.isnan(theta_max):
             return None
 
-        
-        
         Sigma_x_minus = np.eye(n)
         posterior_list = []
         conv_norms = []
         
         for step in range(steps):
-            # Catch any solver errors during measurement update
             try:
                 Sigma_x_sol = dr_kf_solve_measurement_update(Sigma_x_minus, C, Sigma_v_nom, theta_max)
             except cp.error.SolverError:
@@ -306,21 +284,19 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
             "conv_norms": conv_norms
         }
     except (cp.error.SolverError, Exception):
-        # Skip experiment if any solver error or unexpected exception occurs.
         return None
 
 if __name__=="__main__":
     tol = 1e-6  # convergence tolerance for final norm
-    num_exp = 1000  # number of valid experiments to collect
+    num_exp = 1  # number of valid experiments to collect
     success_count = 0
     valid_experiments = []
     
-    batch_size = 20  # number of experiments to run in parallel per batch
+    batch_size = 1  # number of experiments to run in parallel per batch
     
     while len(valid_experiments) < num_exp:
-        # Parallel computation for fast results!
         results = Parallel(n_jobs=-1)(
-            delayed(run_dr_kf_once)(n=5, m=5, steps=500, T=10, q=20, dist_type="normal", tol=tol)
+            delayed(run_dr_kf_once)(n=2, m=1, steps=500, T=8, q=20, dist_type="normal", tol=tol)
             for _ in range(batch_size)
         )
         for res in results:
@@ -335,5 +311,39 @@ if __name__=="__main__":
 
     success_rate = (success_count / num_exp) * 100
     print("\n==================================================")
-    print("\n Parallel Computation finished!!")
+    print("Parallel Computation finished!!")
     print(f"Convergence success rate: {success_count}/{num_exp} = {success_rate:.2f}%")
+
+    # --------------------------
+    # Convergence Rate Analysis
+    # --------------------------
+    res = valid_experiments[0]
+    posterior_list = res["posterior_list"]
+
+    # The converged covariance is taken as the last element.
+    converged_cov = posterior_list[-1]
+
+    # Compute the 2-norm error for each time step.
+    errors = [np.linalg.norm(S - converged_cov, 2) for S in posterior_list]
+
+    plt.figure(figsize=(10, 6))
+
+    
+    plt.semilogy(range(len(errors) - 1), errors[:-1],
+                marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
+
+    # Plot only the last point as a single marker
+    plt.semilogy(len(errors) - 1, errors[-1],
+                marker='o', color='C0', markersize=5)
+
+    plt.xlabel('Time Step', fontsize=16)
+    plt.ylabel(r'$\|\Sigma_{x,t}^{*} - \Sigma_{x,\mathrm{converged}}^{*}\|_2$', fontsize=16)
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    # Increase tick label font size for grid values
+    plt.tick_params(axis='both', which='major', labelsize=14)
+
+    plt.tight_layout()
+    plt.savefig('convergence_rate_analysis.png', dpi=300, bbox_inches='tight')
+    plt.show()
+

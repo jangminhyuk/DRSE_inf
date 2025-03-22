@@ -13,7 +13,7 @@ with B defined as:
 A steady–state LQR gain is computed offline using specified cost matrices Q_lqr and R_lqr.
 The nominal parameters are obtained via EM (covariances only) while the known mean
 vectors (x0_mean, mu_w, mu_v) are used for the means.
-Then, six filters (KF, KF_inf, DRKF, BCOT, KL, and risk–sensitive filter)
+Then, five filters (KF, KF_inf, DRKF, BCOT, and risk–sensitive filter)
 (from the folder LQR_with_estimator) are run in closed–loop with exactly the same controller
 for each candidate robust parameter value.
 For each simulation run, the mean squared error (MSE) trajectory and the LQR cost
@@ -34,15 +34,15 @@ import pickle
 from joblib import Parallel, delayed
 from pykalman import KalmanFilter
 from scipy.linalg import solve_discrete_are
+from scipy.linalg import expm
+import matplotlib.pyplot as plt
 
 # Import filter implementations from the LQR_with_estimator folder.
 from LQR_with_estimator.KF import KF
 from LQR_with_estimator.KF_inf import KF_inf
 from LQR_with_estimator.DRKF_ours_inf import DRKF_ours_inf
 from LQR_with_estimator.BCOT import BCOT 
-from LQR_with_estimator.KL import KL
 from LQR_with_estimator.risk_sensitive import RiskSensitive
-from scipy.linalg import expm
 
 # --- Distribution Sampling Functions (for true data generation) ---
 def normal(mu, Sigma, N=1):
@@ -159,29 +159,54 @@ def compute_lqr_cost(result, Q_lqr, R_lqr, K_lqr):
 def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, _unused):
     np.random.seed(seed_base + exp_idx)
     
-    # # System dimensions.
-    nx = 4; nw = 4; ny = 2; dt = 0.5
-    # Correct A matrix for tracking [x1, x2, x1dot, x2dot]:
-    A = np.array([[1, 0, dt, 0],
-                  [0, 1, 0, dt],
-                  [0, 0, 1, 0],
-                  [0, 0, 0, 1]])
-    C = np.array([[1, 0, 0, 0],
-                  [0, 1, 0, 0]])
-    system_data = (A, C)
+    # System dimensions.
+    nx = 4; nw = 4; ny = 2; nu = 2
+
+    # A = np.array([
+    #     [-0.0649,  0.0787,  0.1705, -0.5616],
+    #     [ 0.0386, -0.939,   4.2277,  0.0198],
+    #     [ 0.1121, -0.4254, -0.7968,  0],
+    #     [ 0,       0,       1,       0]
+    # ])
+
+    # B = np.array([
+    #     [-0.9454,  0.5313],
+    #     [-8.6476, -10.769],
+    #     [19.0824, -2.8959],
+    #     [ 0,       0]
+    # ])
+
+    # C = np.array([
+    #     [1, 0, 0, 0],
+    #     [0, 0, 0, 1]
+    # ])
     
-    # B matrix for control.
-    B = np.array([[0, 0],
-                  [0, 0],
-                  [1, 0],
-                  [0, 1]])
+    A = np.array([
+        [-0.0649,  0.0787,  0.1705, -0.5616],
+        [ 0.0386, -0.939,   4.2277,  0.0198],
+        [ 0.1121, -0.4254, -0.7968,  0],
+        [ 0,       0,       1,       0]
+    ])
+
+    B = np.array([
+        [-0.9454,  0.5313],
+        [-8.6476, -10.769],
+        [19.0824, -2.8959],
+        [ 0,       0]
+    ])
+
+    C = np.array([
+        [1, 0, 0, 0],
+        [0, 0, 0, 1]
+    ])
+    system_data = (A, C)
     
     # --- True Distribution Parameters ---
     if dist == "normal":
         mu_w = 0.0 * np.ones((nw, 1))
-        Sigma_w = 0.05 * np.eye(nw)
+        Sigma_w = 0.01 * np.eye(nw)
         x0_mean = 0.0 * np.ones((nx, 1))
-        x0_cov = 0.05 * np.eye(nx)
+        x0_cov = 0.01 * np.eye(nx)
         w_max = None; w_min = None; x0_max = None; x0_min = None
     elif dist == "quadratic":
         w_max = 1.0 * np.ones(nx)
@@ -197,7 +222,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     
     if noise_dist == "normal":
         mu_v = 0.0 * np.ones((ny, 1))
-        M = 0.05 * np.eye(ny)
+        M = 0.01 * np.eye(ny)
         v_max = None; v_min = None
     elif noise_dist == "quadratic":
         v_min = -1.0 * np.ones(ny)
@@ -208,7 +233,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         raise ValueError("Unsupported measurement noise distribution.")
     
     # --- Generate Data for EM ---
-    N_data = 20
+    N_data = 100
     _, y_all_em = generate_data(N_data, nx, ny, A, C,
                                 mu_w, Sigma_w, mu_v, M,
                                 x0_mean, x0_cov, x0_max, x0_min,
@@ -223,7 +248,6 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     Sigma_v_hat = np.eye(ny)
     Sigma_x0_hat = x0_cov.copy()
     
-    from pykalman import KalmanFilter
     kf_em = KalmanFilter(transition_matrices=A,
                            observation_matrices=C,
                            transition_covariance=Sigma_w_hat,
@@ -277,6 +301,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         exit()
     
     # --- Simulation Functions for Each Filter ---
+    # Note: We now return the full simulation result (res) so that the state trajectory is available.
     def run_simulation_finite(sim_idx_local):
         estimator = KF(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -290,7 +315,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         estimator.K_lqr = K_lqr
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
+        return res, cost
 
     def run_simulation_inf_kf(sim_idx_local):
         estimator = KF_inf(
@@ -305,7 +330,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         estimator.K_lqr = K_lqr
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
+        return res, cost
 
     def run_simulation_inf_drkf(sim_idx_local):
         estimator = DRKF_ours_inf(
@@ -321,7 +346,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         estimator.K_lqr = K_lqr
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
+        return res, cost
 
     def run_simulation_bcot(sim_idx_local):
         estimator = BCOT(
@@ -337,24 +362,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         estimator.K_lqr = K_lqr
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
-
-    def run_simulation_kl(sim_idx_local):
-        kl_maxit = 2
-        estimator = KL(
-            T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
-            true_x0_mean=x0_mean, true_x0_cov=x0_cov,
-            true_mu_w=mu_w, true_Sigma_w=Sigma_w,
-            true_mu_v=mu_v, true_M=M,
-            nominal_x0_mean=nominal_x0_mean, nominal_x0_cov=nominal_x0_cov,
-            nominal_mu_w=nominal_mu_w, nominal_Sigma_w=nominal_Sigma_w,
-            nominal_mu_v=nominal_mu_v, nominal_M=nominal_M,
-            radius=robust_val, maxit=kl_maxit,
-            x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min)
-        estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
+        return res, cost
 
     def run_simulation_risk(sim_idx_local):
         estimator = RiskSensitive(
@@ -373,53 +381,61 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         estimator.K_lqr = K_lqr
         res = estimator.forward()
         cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
-        return res['mse'], cost
+        return res, cost
 
     # Run simulations for each filter.
     results_finite = [run_simulation_finite(i) for i in range(num_sim)]
-    mse_finite_all, cost_finite_all = zip(*results_finite)
-    mse_mean_finite = np.mean(np.array(mse_finite_all), axis=0)
-    cost_mean_finite = np.mean(np.array(cost_finite_all))
-    
+    mse_finite_all = np.array([r[0]['mse'] for r in results_finite])
+    cost_finite_all = [r[1] for r in results_finite]
+    mse_mean_finite = np.mean(mse_finite_all, axis=0)
+    cost_mean_finite = np.mean(cost_finite_all)
+    rep_state_finite = results_finite[0][0]['state_traj']  # representative state trajectory
+
     results_inf = [run_simulation_inf_kf(i) for i in range(num_sim)]
-    mse_inf_all, cost_inf_all = zip(*results_inf)
-    mse_mean_inf = np.mean(np.array(mse_inf_all), axis=0)
-    cost_mean_inf = np.mean(np.array(cost_inf_all))
-    
+    mse_inf_all = np.array([r[0]['mse'] for r in results_inf])
+    cost_inf_all = [r[1] for r in results_inf]
+    mse_mean_inf = np.mean(mse_inf_all, axis=0)
+    cost_mean_inf = np.mean(cost_inf_all)
+    rep_state_inf = results_inf[0][0]['state_traj']
+
     results_drkf = [run_simulation_inf_drkf(i) for i in range(num_sim)]
-    mse_drkf_all, cost_drkf_all = zip(*results_drkf)
-    mse_mean_drkf = np.mean(np.array(mse_drkf_all), axis=0)
-    cost_mean_drkf = np.mean(np.array(cost_drkf_all))
-    
+    mse_drkf_all = np.array([r[0]['mse'] for r in results_drkf])
+    cost_drkf_all = [r[1] for r in results_drkf]
+    mse_mean_drkf = np.mean(mse_drkf_all, axis=0)
+    cost_mean_drkf = np.mean(cost_drkf_all)
+    rep_state_drkf = results_drkf[0][0]['state_traj']
+
     results_bcot = [run_simulation_bcot(i) for i in range(num_sim)]
-    mse_bcot_all, cost_bcot_all = zip(*results_bcot)
-    mse_mean_bcot = np.mean(np.array(mse_bcot_all), axis=0)
-    cost_mean_bcot = np.mean(np.array(cost_bcot_all))
-    
-    results_kl = [run_simulation_kl(i) for i in range(num_sim)]
-    mse_kl_all, cost_kl_all = zip(*results_kl)
-    mse_mean_kl = np.mean(np.array(mse_kl_all), axis=0)
-    cost_mean_kl = np.mean(np.array(cost_kl_all))
-    
+    mse_bcot_all = np.array([r[0]['mse'] for r in results_bcot])
+    cost_bcot_all = [r[1] for r in results_bcot]
+    mse_mean_bcot = np.mean(mse_bcot_all, axis=0)
+    cost_mean_bcot = np.mean(cost_bcot_all)
+    rep_state_bcot = results_bcot[0][0]['state_traj']
+
     results_risk = [run_simulation_risk(i) for i in range(num_sim)]
-    mse_risk_all, cost_risk_all = zip(*results_risk)
-    mse_mean_risk = np.mean(np.array(mse_risk_all), axis=0)
-    cost_mean_risk = np.mean(np.array(cost_risk_all))
+    mse_risk_all = np.array([r[0]['mse'] for r in results_risk])
+    cost_risk_all = [r[1] for r in results_risk]
+    mse_mean_risk = np.mean(mse_risk_all, axis=0)
+    cost_mean_risk = np.mean(cost_risk_all)
+    rep_state_risk = results_risk[0][0]['state_traj']
     
-    # Return candidate results for this robust value.
+    # Return candidate results for this robust value. We also include one representative state trajectory per filter.
     return {
         'finite': mse_mean_finite,
+        'finite_state': rep_state_finite,
         'inf': mse_mean_inf,
+        'inf_state': rep_state_inf,
         'drkf_inf': mse_mean_drkf,
+        'drkf_inf_state': rep_state_drkf,
         'bcot': mse_mean_bcot,
-        'kl': mse_mean_kl,
+        'bcot_state': rep_state_bcot,
         'risk': mse_mean_risk,
+        'risk_state': rep_state_risk,
         'cost': {
             'finite': cost_mean_finite,
             'inf': cost_mean_inf,
             'drkf_inf': cost_mean_drkf,
             'bcot': cost_mean_bcot,
-            'kl': cost_mean_kl,
             'risk': cost_mean_risk
         }
     }
@@ -428,7 +444,7 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
 def main(dist, noise_dist, num_sim, T, num_exp):
     seed_base = 2024
     # Define candidate robust parameter values.
-    robust_vals = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+    robust_vals = [0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
     all_results = {}
     for robust_val in robust_vals:
         print(f"Running experiments for robust parameter = {robust_val}")
@@ -437,13 +453,13 @@ def main(dist, noise_dist, num_sim, T, num_exp):
             for exp_idx in range(num_exp)
         )
         # Collect terminal MSE and cost for each filter.
-        cost_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'kl', 'risk']
+        cost_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
         all_cost = [exp['cost'] for exp in experiments]
         all_mse = {key: [] for key in cost_keys}
         for exp in experiments:
             for key in cost_keys:
-                # Access mse values directly (instead of exp['mse'][key])
-                all_mse[key].append(exp[key][-1])
+                # Append terminal MSE from the representative simulation in each experiment.
+                all_mse[key].append(exp[f"{key}_state"][-1])
         final_cost = {key: np.mean([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
         final_cost_std = {key: np.std([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
         final_mse = {key: np.mean(all_mse[key]) for key in cost_keys}
@@ -462,8 +478,6 @@ def main(dist, noise_dist, num_sim, T, num_exp):
     optimal_results = {}
     for f in filters:
         if f in ['finite', 'inf']:
-            # For standard KF, choose an arbitrary candidate (they do not vary with robust parameter)
-            # and mark the robust parameter as "N/A".
             candidate = list(all_results.values())[0]
             optimal_results[f] = {
                 'robust_val': "N/A",
@@ -496,14 +510,35 @@ def main(dist, noise_dist, num_sim, T, num_exp):
         print(f"{filt}: Optimal robust parameter = {info['robust_val']}, "
               f"LQR cost = {info['cost']:.4f} (std {info['cost_std']:.4f}), Terminal MSE = {info['mse']:.4f} (std {info['mse_std']:.4f})")
     
-    results_path = "./results/estimator4/"
+    results_path = "./results/estimator7/"
     if not os.path.exists(results_path):
         os.makedirs(results_path)
     save_data(os.path.join(results_path, f'overall_results_{dist}_{noise_dist}.pkl'), all_results)
     save_data(os.path.join(results_path, f'optimal_results_{dist}_{noise_dist}.pkl'), optimal_results)
     print("LQR with state estimation experiments completed for all robust parameters.")
-
-
+    
+    # --- Plot Representative State Trajectories ---
+    # For each filter, re-run one simulation with the chosen optimal robust parameter.
+    # For standard KF (finite and inf), robust parameter is not used so we choose the first candidate.
+    filter_names = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
+    rep_state_trajs = {}
+    time_vec = np.arange(T+1)
+    for filt in filter_names:
+        if filt in ['finite', 'inf']:
+            robust_val_for_filter = robust_vals[0]
+        else:
+            robust_val_for_filter = optimal_results[filt]['robust_val']
+        # Run one experiment (num_sim=1) with the chosen robust parameter.
+        rep_exp = run_experiment(0, dist, noise_dist, 1, T, seed_base, robust_val_for_filter, 0)
+        rep_state_trajs[filt] = rep_exp[f"{filt}_state"]
+        # Plot the first coordinate of the state trajectory.
+        plt.plot(time_vec, rep_state_trajs[filt][:, 0, 0], label=filt)
+    plt.xlabel("Time Step")
+    plt.ylabel("State x[0]")
+    plt.title("Representative State Trajectories for Each Filter")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -515,7 +550,7 @@ if __name__ == "__main__":
                         help="Number of simulation runs per experiment")
     parser.add_argument('--horizon', default=20, type=int,
                         help="Time horizon T")
-    parser.add_argument('--num_exp', default=20, type=int,
+    parser.add_argument('--num_exp', default=1, type=int,
                         help="Number of independent experiments")
     args = parser.parse_args()
     main(args.dist, args.noise_dist, args.num_sim, args.horizon, args.num_exp)

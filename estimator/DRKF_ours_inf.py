@@ -144,14 +144,17 @@ class DRKF_ours_inf:
             raise ValueError("Unsupported distribution for measurement noise.")
         
     def create_DR_sdp(self):
+        # Compute lambda_min for nominal measurement noise covariance (Sigma_v_hat)
+        lambda_min_val = np.linalg.eigvalsh(self.nominal_Sigma_v).min()
+        
         # Construct the SDP problem.
         # Variables
         X = cp.Variable((self.nx, self.nx), symmetric=True, name='X')
         X_pred = cp.Variable((self.nx, self.nx), symmetric=True, name='X_pred')
         Sigma_v = cp.Variable((self.ny, self.ny), symmetric=True, name='Sigma_v')
         X_pred_hat = cp.Variable((self.nx, self.nx), symmetric=True, name='X_pred_hat')
-        Y = cp.Variable((self.nx, self.nx), name='Y')#, PSD=True)
-        Z = cp.Variable((self.ny, self.ny), name='Z')#, PSD=True)
+        Y = cp.Variable((self.nx, self.nx), name='Y')
+        Z = cp.Variable((self.ny, self.ny), name='Z')
         
         # Parameters
         theta_x = cp.Parameter(nonneg=True, name='theta_x')
@@ -162,7 +165,7 @@ class DRKF_ours_inf:
         # Objective: maximize trace(X)
         obj = cp.Maximize(cp.trace(X))
         
-        # Constraints using Schur complements.
+        # Constraints using Schur complements and the additional constraint on Sigma_v.
         constraints = [
             cp.bmat([[X_pred - X, X_pred @ self.C.T],
                      [self.C @ X_pred, self.C @ X_pred @ self.C.T + Sigma_v]
@@ -179,7 +182,9 @@ class DRKF_ours_inf:
             X >> 0,
             X_pred >> 0,
             X_pred_hat >> 0,
-            Sigma_v >> 0
+            Sigma_v >> 0,
+            # New constraint: Sigma_v is larger than lambda_min(Sigma_v_hat)*I
+            Sigma_v >> lambda_min_val * np.eye(self.ny)
         ]
         
         prob = cp.Problem(obj, constraints)
