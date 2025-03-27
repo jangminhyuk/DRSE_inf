@@ -1,7 +1,7 @@
 import pickle
 
 # Load the overall results from the saved pickle file.
-results_file = "./results/estimator7/overall_results_normal_normal.pkl"
+results_file = "./results/estimator8/overall_results_normal_normal.pkl"
 with open(results_file, 'rb') as f:
     overall_results = pickle.load(f)
 
@@ -31,7 +31,7 @@ for filt in filter_order:
 latex_combined = ""
 latex_combined += "\\begin{table*}[ht]\n"
 latex_combined += "\\centering\n"
-latex_combined += "\\caption{LQR Cost and Averaged MSE Results. All values are reported as Mean (Std).}\n"
+latex_combined += "\\caption{Mean and standard deviation of LQR cost and average MSE under -- noise distributions, computed over 20 runs.}\n"
 latex_combined += "\\begin{tabular}{ll" + "c" * len(robust_params) + "}\n"
 latex_combined += "\\hline\n"
 

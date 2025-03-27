@@ -505,7 +505,7 @@ def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     for filt, info in sorted_optimal:
         print(f"{filt}: Optimal robust parameter = {info['robust_val']}, LQR cost = {info['cost']:.4f}, Average MSE = {info['mse']:.4f}")
     
-    results_path = "./results/estimator7/"
+    results_path = "./results/estimator8/"
     if not os.path.exists(results_path):
         os.makedirs(results_path)
     save_data(os.path.join(results_path, f'overall_results_{dist}_{noise_dist}.pkl'), all_results)
