@@ -590,7 +590,7 @@ if __name__ == "__main__":
                         help="Measurement noise distribution (normal or quadratic)")
     parser.add_argument('--num_sim', default=1, type=int,
                         help="Number of simulation runs per experiment in phase 2")
-    parser.add_argument('--num_exp', default=100, type=int,
+    parser.add_argument('--num_exp', default=200, type=int,
                         help="Number of independent experiments in phase 2")
     parser.add_argument('--time', default=10, type=int,
                         help="Total simulation time")

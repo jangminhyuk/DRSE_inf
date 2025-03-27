@@ -150,7 +150,7 @@ def plot_histograms(phase2_data):
     
     # Plot histogram for LQR cost.
     all_costs = np.concatenate([cost_data[filt] for filt in top3_filters])
-    bins_cost = np.linspace(np.min(all_costs), np.max(all_costs), 51)
+    bins_cost = np.linspace(np.min(all_costs), np.max(all_costs), 101)
     
     # Define colors: DRKF always green; assign blue and red to the others.
     color_map = {}
@@ -182,7 +182,7 @@ def plot_histograms(phase2_data):
     
     # Plot histogram for averaged MSE.
     all_mses = np.concatenate([mse_data[filt] for filt in top3_filters])
-    bins_mse = np.linspace(np.min(all_mses), np.max(all_mses), 51)
+    bins_mse = np.linspace(np.min(all_mses), np.max(all_mses), 101)
     
     plt.figure(figsize=(8,6))
     for filt in top3_filters:
