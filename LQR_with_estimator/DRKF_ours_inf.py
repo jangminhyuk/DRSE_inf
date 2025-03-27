@@ -124,9 +124,9 @@ class DRKF_ours_inf:
 
     def quadratic(self, max_val, min_val, N=1):
         n = min_val.shape[0]
-        x = np.random.rand(n, N)
-        x = self.quadratic(x, max_val, min_val)
-        return x
+        x = np.random.rand(N, n).T  # shape: (n, N)
+        return self.quad_inverse(x, max_val, min_val)
+
 
     def sample_initial_state(self):
         if self.dist == "normal":
@@ -280,3 +280,74 @@ class DRKF_ours_inf:
                 'output_traj': y,
                 'est_state_traj': x_est,
                 'mse': mse}
+    # --- Forward Trajectory Tracking Simulation with LQR Control ---
+    def forward_track(self, desired_trajectory):
+        """
+        Performs closed-loop simulation for trajectory tracking using the DRKF.
+        The control input is computed based on the tracking error:
+            u[t] = -K_lqr * (x_est[t] - x_d[t]),
+        where x_d[t] is the desired state at time t.
+        The filter update uses the DRKF update step.
+        """
+        start_time = time.time()
+        T = self.T
+        nx = self.nx
+        ny = self.ny
+        A = self.A
+        C = self.C
+        B = self.B
+
+        # Allocate arrays.
+        x = np.zeros((T+1, nx, 1))         # true state trajectory
+        y = np.zeros((T+1, ny, 1))           # measurement trajectory
+        x_est = np.zeros((T+1, nx, 1))       # DRKF state estimates
+        error = np.zeros((T+1, nx, 1))       # tracking error
+        mse = np.zeros(T+1)                # mean squared error
+
+        # --- Initialization ---
+        x[0] = self.sample_initial_state()
+        x_est[0] = self.nominal_x0_mean.copy()
+        # Compute initial tracking error using the desired state at t=0.
+        desired = desired_trajectory[:, 0].reshape(-1, 1)
+        error[0] = x_est[0] - desired
+
+        # First measurement.
+        v0 = self.sample_measurement_noise()
+        y[0] = C @ x[0] + v0
+        # Initial DRKF update.
+        x_est[0] = self.DR_kalman_filter(self.nominal_mu_v, self.nominal_x0_mean, y[0])
+        mse[0] = np.linalg.norm(x_est[0] - x[0])**2
+
+        # --- Time Update and Filtering with Trajectory Tracking Control ---
+        for t in range(T):
+            # Get desired state at current time step.
+            desired = desired_trajectory[:, t].reshape(-1, 1)
+            # Compute tracking error.
+            error[t] = x_est[t] - desired
+            # Compute control input using LQR gain.
+            if self.K_lqr is None:
+                raise ValueError("LQR gain (K_lqr) has not been assigned!")
+            u = -self.K_lqr @ error[t]
+
+            # True state propagation: x[t+1] = A*x[t] + B*u + w
+            w = self.sample_process_noise()
+            x[t+1] = A @ x[t] + B @ u + w
+
+            # Measurement: y[t+1] = C*x[t+1] + v
+            v = self.sample_measurement_noise()
+            y[t+1] = C @ x[t+1] + v
+
+            # Prediction: x_pred = A*x_est[t] + B*u + nominal_mu_w
+            x_pred = A @ x_est[t] + B @ u + self.nominal_mu_w
+            # DRKF update:
+            x_est[t+1] = self.DR_kalman_filter(self.nominal_mu_v, x_pred, y[t+1])
+            
+            mse[t+1] = np.linalg.norm(x_est[t+1] - x[t+1])**2
+
+        comp_time = time.time() - start_time
+        return {'comp_time': comp_time,
+                'state_traj': x,
+                'output_traj': y,
+                'est_state_traj': x_est,
+                'mse': mse,
+                'tracking_error': error}

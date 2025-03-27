@@ -106,9 +106,9 @@ class RiskSensitive:
 
     def quadratic(self, max_val, min_val, N=1):
         n = min_val.shape[0]
-        x = np.random.rand(N, n)
-        x = self.quad_inverse(x, max_val, min_val)
-        return x.T
+        x = np.random.rand(N, n).T  # Generates an array of shape (n, N)
+        return self.quad_inverse(x, max_val, min_val)
+
 
     def sample_initial_state(self):
         if self.dist == "normal":
@@ -200,3 +200,87 @@ class RiskSensitive:
                 'output_traj': y,
                 'est_state_traj': x_est,
                 'mse': mse}
+    # --- Forward Trajectory Tracking Simulation with LQR Control ---
+    def forward_track(self, desired_trajectory):
+        """
+        Performs closed-loop simulation for trajectory tracking using the risk–sensitive filter.
+        The control input is computed based on the tracking error:
+            u[t] = -K_lqr * (x_est[t] - x_d[t]),
+        where x_d[t] is the desired state at time t.
+        The filter update incorporates the risk–sensitive modification.
+        """
+        start_time = time.time()
+        T = self.T
+        nx = self.nx
+        ny = self.ny
+        A = self.A
+        C = self.C
+        B = self.B
+        Q = self.nominal_Sigma_w  # EM estimate for process noise covariance.
+        R = self.nominal_M        # EM estimate for measurement noise covariance.
+        theta_rs = self.theta_rs
+        
+        # Allocate arrays.
+        x = np.zeros((T+1, nx, 1))           # True state trajectory.
+        y = np.zeros((T+1, ny, 1))           # Measurement trajectory.
+        x_est = np.zeros((T+1, nx, 1))       # Filter (risk-sensitive) state estimates.
+        mse = np.zeros(T+1)
+        tracking_error = np.zeros((T+1, nx, 1))
+        
+        # --- Initialization ---
+        x[0] = self.sample_initial_state()
+        x_est[0] = self.nominal_x0_mean.copy()
+        Sigma = self.nominal_x0_cov.copy()
+        
+        # Compute initial tracking error using the desired state at t = 0.
+        desired = desired_trajectory[:, 0].reshape(-1, 1)
+        tracking_error[0] = x_est[0] - desired
+        
+        # First measurement.
+        v0 = self.sample_measurement_noise()
+        y[0] = C @ x[0] + v0
+        mse[0] = np.linalg.norm(x_est[0] - x[0])**2
+        
+        # --- Time Update and Filtering with Trajectory Tracking ---
+        for t in range(T):
+            # Get desired state at current time step.
+            desired = desired_trajectory[:, t].reshape(-1, 1)
+            tracking_error[t] = x_est[t] - desired
+            
+            # Compute control input based on tracking error.
+            if self.K_lqr is None:
+                raise ValueError("LQR gain (K_lqr) has not been assigned!")
+            u = -self.K_lqr @ tracking_error[t]
+            
+            # True state propagation: x[t+1] = A*x[t] + B*u + w.
+            w = self.sample_process_noise()
+            x[t+1] = A @ x[t] + B @ u + w
+            
+            # Measurement: y[t+1] = C*x[t+1] + v.
+            v = self.sample_measurement_noise()
+            y[t+1] = C @ x[t+1] + v
+            
+            # Prediction step.
+            x_pred = A @ x_est[t] + B @ u + self.nominal_mu_w
+            y_pred = C @ x_pred + self.nominal_mu_v
+            
+            # Risk-sensitive innovation covariance.
+            S = C @ Sigma @ C.T + R + theta_rs * (C @ Sigma @ C.T)
+            # Compute gain.
+            K_gain = A @ Sigma @ C.T @ np.linalg.inv(S)
+            # Innovation.
+            innovation = y[t+1] - y_pred
+            # Update estimate.
+            x_est[t+1] = x_pred + K_gain @ innovation
+            # Update covariance.
+            Sigma = A @ Sigma @ A.T + Q - A @ Sigma @ C.T @ np.linalg.inv(S) @ C @ Sigma @ A.T
+            
+            mse[t+1] = np.linalg.norm(x_est[t+1] - x[t+1])**2
+        
+        comp_time = time.time() - start_time
+        return {'comp_time': comp_time,
+                'state_traj': x,
+                'output_traj': y,
+                'est_state_traj': x_est,
+                'mse': mse,
+                'tracking_error': tracking_error}

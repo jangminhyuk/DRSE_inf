@@ -108,9 +108,9 @@ class BCOT:
 
     def quadratic(self, max_val, min_val, N=1):
         n = min_val.shape[0]
-        x = np.random.rand(n, N)
-        x = self.quadratic(x, max_val, min_val)
-        return x
+        x = np.random.rand(N, n).T  # shape: (n, N)
+        return self.quad_inverse(x, max_val, min_val)
+
 
     def sample_initial_state(self):
         if self.dist == "normal":
@@ -202,3 +202,84 @@ class BCOT:
                 'output_traj': y,
                 'est_state_traj': x_est,
                 'mse': mse}
+    # --- Forward Trajectory Tracking Simulation with LQR Control ---
+    def forward_track(self, desired_trajectory):
+        """
+        Performs closed-loop simulation for trajectory tracking using the robust BCOT filter.
+        The control input is computed based on the tracking error:
+            u[t] = -K_lqr * (x_est[t] - x_d[t]),
+        where x_d[t] is the desired state at time t.
+        The robust update is performed via the BCOT optimization routine.
+        """
+        start_time = time.time()
+        T = self.T
+        nx = self.nx
+        ny = self.ny
+        A = self.A
+        C = self.C
+        B = self.B
+
+        # Allocate arrays.
+        x = np.zeros((T+1, nx, 1))         # true state trajectory
+        y = np.zeros((T+1, ny, 1))           # measurement trajectory
+        x_est = np.zeros((T+1, nx, 1))       # BCOT state estimates
+        error = np.zeros((T+1, nx, 1))       # tracking error
+        mse = np.zeros(T+1)                # mean squared error
+
+        # --- Initialization ---
+        x[0] = self.sample_initial_state()
+        x_est[0] = self.nominal_x0_mean.copy()
+        # Compute initial tracking error using the desired state at t=0.
+        desired = desired_trajectory[:, 0].reshape(-1, 1)
+        error[0] = x_est[0] - desired
+
+        # First measurement.
+        v0 = self.sample_measurement_noise()
+        y[0] = C @ x[0] + v0
+        # Initialize robust update.
+        pre_mean = self.nominal_x0_mean.copy()
+        pre_cov = self.nominal_x0_cov.copy()
+        update_mean, update_cov = optimize(self.ny, self.nx, self.radius, A, self.Bp, C, self.Dp,
+                                           pre_cov, y[0], pre_mean, self.maxit, algo='BCOT')
+        pre_mean = update_mean.copy()
+        pre_cov = update_cov.copy()
+        x_est[0] = update_mean.copy()
+        mse[0] = np.linalg.norm(x_est[0] - x[0])**2
+
+        # --- Time Update and Robust Filtering with Trajectory Tracking ---
+        for t in range(T):
+            # Get desired state at current time step.
+            desired = desired_trajectory[:, t].reshape(-1, 1)
+            # Compute tracking error.
+            error[t] = x_est[t] - desired
+            # Compute control input based on tracking error.
+            if self.K_lqr is None:
+                raise ValueError("LQR gain (K_lqr) has not been assigned!")
+            u = -self.K_lqr @ error[t]
+
+            # True state propagation.
+            w = self.sample_process_noise()
+            x[t+1] = A @ x[t] + B @ u + w
+
+            # Measurement.
+            v = self.sample_measurement_noise()
+            y[t+1] = C @ x[t+1] + v
+
+            # Robust prediction.
+            x_pred = A @ x_est[t] + B @ u + self.nominal_mu_w
+            # Robust update via BCOT optimization.
+            update_mean, update_cov = optimize(self.ny, self.nx, self.radius, A, self.Bp, C, self.Dp,
+                                               pre_cov, y[t+1], x_pred, self.maxit, algo='BCOT')
+            x_est[t+1] = update_mean.copy()
+            pre_mean = update_mean.copy()
+            pre_cov = update_cov.copy()
+
+            mse[t+1] = np.linalg.norm(x_est[t+1] - x[t+1])**2
+
+        comp_time = time.time() - start_time
+        return {'comp_time': comp_time,
+                'state_traj': x,
+                'output_traj': y,
+                'est_state_traj': x_est,
+                'mse': mse,
+                'tracking_error': error}

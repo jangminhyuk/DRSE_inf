@@ -194,3 +194,79 @@ class KF:
                 'output_traj': y,
                 'est_state_traj': x_est,
                 'mse': mse}
+        
+# --- Forward trajectory tracking Simulation with LQR Control ---
+    def forward_track(self, desired_trajectory):
+        start_time = time.time()
+        T = self.T
+        nx = self.nx
+        ny = self.ny
+        A = self.A
+        C = self.C
+        B = self.B
+        
+        # Allocate arrays.
+        x = np.zeros((T+1, nx, 1))         # true state trajectory
+        y = np.zeros((T+1, ny, 1))           # measurement trajectory
+        x_est = np.zeros((T+1, nx, 1))       # filter state estimates
+        P = np.zeros((T+1, nx, nx))          # error covariance
+        error = np.zeros((self.T+1, self.nx, 1)) # Tracking error
+        
+        # --- Initialization ---
+        x[0] = self.sample_initial_state()
+        x_est[0] = self.nominal_x0_mean.copy()
+        P[0] = self.nominal_x0_cov.copy()
+        
+        # First measurement.
+        v0 = self.sample_measurement_noise()
+        y[0] = C @ x[0] + v0
+        S0 = C @ P[0] @ C.T + self.nominal_M
+        K0 = P[0] @ C.T @ np.linalg.inv(S0)
+        innovation0 = y[0] - (C @ x_est[0] + self.nominal_mu_v)
+        x_est[0] = x_est[0] + K0 @ innovation0
+        P[0] = (np.eye(nx) - K0 @ C) @ P[0]
+        
+        mse = np.zeros(T+1)
+        mse[0] = np.linalg.norm(x_est[0] - x[0])**2
+        
+        # --- Time Update and Filtering with Control ---
+        for t in range(T):
+            # Compute control input using LQR gain.
+            if self.K_lqr is None:
+                raise ValueError("LQR gain (K_lqr) has not been assigned!")
+            
+            
+            # True state propagation: x[t+1] = A*x[t] + B*u + w
+            w = self.sample_process_noise()
+            
+            # Get desired trajectory at current time step (desired position and velocity)
+            traj = desired_trajectory[:,t].reshape(-1, 1)
+            error[t] = x_est[t] - traj  # Error as a 4D vector
+            u = -self.K_lqr @ error[t]
+            
+            
+            x[t+1] = A @ x[t] + B @ u + w
+            
+            # Measurement:
+            v = self.sample_measurement_noise()
+            y[t+1] = C @ x[t+1] + v
+            
+            # Filter prediction: x_pred = A*x_est[t] + B*u + nominal_mu_w
+            x_pred = A @ x_est[t] + B @ u + self.nominal_mu_w
+            P_pred = A @ P[t] @ A.T + self.nominal_Sigma_w
+            
+            # Update:
+            S_t = C @ P_pred @ C.T + self.nominal_M
+            K_t = P_pred @ C.T @ np.linalg.inv(S_t)
+            innovation = y[t+1] - (C @ x_pred + self.nominal_mu_v)
+            x_est[t+1] = x_pred + K_t @ innovation
+            P[t+1] = (np.eye(nx) - K_t @ C) @ P_pred
+            
+            mse[t+1] = np.linalg.norm(x_est[t+1] - x[t+1])**2
+        
+        comp_time = time.time() - start_time
+        return {'comp_time': comp_time,
+                'state_traj': x,
+                'output_traj': y,
+                'est_state_traj': x_est,
+                'mse': mse}

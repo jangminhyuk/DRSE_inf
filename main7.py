@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main4.py
+main7.py
 
 This experiment runs a closed–loop simulation where an LQR controller is applied to the system:
     xₜ₊₁ = A xₜ + B uₜ + wₜ,    yₜ = C xₜ + vₜ,
-with B defined as:
-    [[0, 0],
-     [0, 0],
-     [1, 0],
-     [0, 1]].
+
 A steady–state LQR gain is computed offline using specified cost matrices Q_lqr and R_lqr.
 The nominal parameters are obtained via EM (covariances only) while the known mean
 vectors (x0_mean, mu_w, mu_v) are used for the means.
 Then, five filters (KF, KF_inf, DRKF, BCOT, and risk–sensitive filter)
-(from the folder LQR_with_estimator) are run in closed–loop with exactly the same controller
-for each candidate robust parameter value.
-For each simulation run, the mean squared error (MSE) trajectory and the LQR cost
-computed as:
-    J = Σₜ (x[t]ᵀ Q_lqr x[t] + u[t]ᵀ R_lqr u[t]) + x[T]ᵀ Q_lqr x[T]
-are returned. For each filter the candidate robust parameter with the lowest average
-LQR cost is chosen as “optimal.” Finally, the performance (terminal MSE and cost)
-of each filter using its optimal robust parameter is saved for comparison and summarized.
-
+(from the folder LQR_with_estimator) are run in closed–loop with exactly the same controller.
+In phase 1, each candidate robust parameter (for the robust filters) is evaluated phase1_repeats times
+to find the optimal robust parameter (standard Kalman filters use a default value).
+Then, in phase 2, each filter is simulated num_sim times using its optimal robust parameter.
+The performance (averaged MSE over the entire horizon and LQR cost) of each filter is saved,
+and a 2D trajectory plot is generated.
+    
 Usage example:
-    python main4.py --dist normal --noise_dist normal --num_sim 500 --horizon 20 --num_exp 10
+    python main7.py --dist normal --noise_dist normal --num_sim 1 --time 10 --trajectory curvy
 """
 
 import numpy as np
@@ -37,14 +31,14 @@ from scipy.linalg import solve_discrete_are
 from scipy.linalg import expm
 import matplotlib.pyplot as plt
 
-# Import filter implementations from the LQR_with_estimator folder.
+# Import filter implementations.
 from LQR_with_estimator.KF import KF
 from LQR_with_estimator.KF_inf import KF_inf
 from LQR_with_estimator.DRKF_ours_inf import DRKF_ours_inf
 from LQR_with_estimator.BCOT import BCOT 
 from LQR_with_estimator.risk_sensitive import RiskSensitive
 
-# --- Distribution Sampling Functions (for true data generation) ---
+# --- Distribution Sampling Functions ---
 def normal(mu, Sigma, N=1):
     return np.random.multivariate_normal(mu[:, 0], Sigma, size=N).T
 
@@ -59,11 +53,11 @@ def quad_inverse(x, b, a):
         for j in range(col):
             beta = (a[j] + b[j]) / 2.0
             alpha = 12.0 / ((b[j] - a[j]) ** 3)
-            tmp = 3 * x[i][j] / alpha - (beta - a[j]) ** 3
+            tmp = 3 * x[i, j] / alpha - (beta - a[j]) ** 3
             if tmp >= 0:
-                x[i][j] = beta + tmp ** (1.0/3.0)
+                x[i, j] = beta + tmp ** (1.0/3.0)
             else:
-                x[i][j] = beta - (-tmp) ** (1.0/3.0)
+                x[i, j] = beta - (-tmp) ** (1.0/3.0)
     return x
 
 def quadratic(w_max, w_min, N=1):
@@ -72,7 +66,7 @@ def quadratic(w_max, w_min, N=1):
     x = quad_inverse(x, w_max, w_min)
     return x.T
 
-# Function to generate the true states and measurements.
+# --- True Data Generation ---
 def generate_data(T, nx, ny, A, C, mu_w, Sigma_w, mu_v, M,
                   x0_mean, x0_cov, x0_max, x0_min, w_max, w_min, v_max, v_min, dist):
     x_true_all = np.zeros((T + 1, nx, 1))
@@ -91,7 +85,6 @@ def generate_data(T, nx, ny, A, C, mu_w, Sigma_w, mu_v, M,
             true_v = quadratic(v_max, v_min)
         y_t = C @ x_true + true_v
         y_all[t] = y_t
-        # Closed-loop: control u will be applied externally.
         x_true = A @ x_true + true_w
         x_true_all[t+1] = x_true
     return x_true_all, y_all
@@ -143,78 +136,80 @@ def compute_lqr_gain(A, B, Q_lqr, R_lqr):
     K = np.linalg.inv(B.T @ P @ B + R_lqr) @ (B.T @ P @ A)
     return K
 
-# --- LQR Cost Computation ---
-def compute_lqr_cost(result, Q_lqr, R_lqr, K_lqr):
+# --- Helper Function to Generate Desired Trajectory ---
+def generate_desired_trajectory(T_total, trajectory):
+    Amp = 5.0      # Amplitude for curvy (sine) trajectory.
+    slope = 1.0    # Slope for linear trajectory.
+    radius = 5.0   # Radius for circular trajectory.
+    omega = 0.5    # Angular frequency.
+    dt = 0.2
+    time_steps = int(T_total / dt) + 1
+    time = np.linspace(0, T_total, time_steps)
+    if trajectory == 'curvy':
+        x_d = Amp * np.sin(omega * time)
+        vx_d = Amp * omega * np.cos(omega * time)
+        y_d = slope * time
+        vy_d = slope * np.ones(time_steps)
+    elif trajectory == 'circular':
+        x_d = radius * np.cos(omega * time)
+        vx_d = -radius * omega * np.sin(omega * time)
+        y_d = radius * np.sin(omega * time)
+        vy_d = radius * omega * np.cos(omega * time)
+    else:
+        raise ValueError("Unsupported trajectory type.")
+    return np.vstack((x_d, vx_d, y_d, vy_d))
+
+# --- Modified LQR Cost Computation for Trajectory Tracking ---
+def compute_lqr_cost(result, Q_lqr, R_lqr, K_lqr, desired_traj):
     x = result['state_traj']
-    x_est = result['est_state_traj']
-    T = x.shape[0] - 1
+    T_steps = x.shape[0]
     cost = 0.0
-    for t in range(T):
-        u = -K_lqr @ x_est[t]
-        cost += (x[t].T @ Q_lqr @ x[t])[0,0] + (u.T @ R_lqr @ u)[0,0]
-    cost += (x[T].T @ Q_lqr @ x[T])[0,0]
+    for t in range(T_steps):
+        error = x[t] - desired_traj[:, t].reshape(-1, 1)
+        u = -K_lqr @ (result['est_state_traj'][t] - desired_traj[:, t].reshape(-1, 1))
+        cost += (error.T @ Q_lqr @ error)[0, 0] + (u.T @ R_lqr @ u)[0, 0]
     return cost
 
-# --- Experiment Function (one independent experiment) ---
-def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, _unused):
+# --- Modified Experiment Function ---
+# Added an optional argument filter_choice (default None).
+# If filter_choice is provided (phase 2), only the simulation for that filter is run.
+def run_experiment(exp_idx, dist, noise_dist, num_sim, seed_base, robust_val, T_total, desired_traj, filter_choice=None):
     np.random.seed(seed_base + exp_idx)
     
-    # System dimensions.
-    nx = 4; nw = 4; ny = 2; nu = 2
-
-    # A = np.array([
-    #     [-0.0649,  0.0787,  0.1705, -0.5616],
-    #     [ 0.0386, -0.939,   4.2277,  0.0198],
-    #     [ 0.1121, -0.4254, -0.7968,  0],
-    #     [ 0,       0,       1,       0]
-    # ])
-
-    # B = np.array([
-    #     [-0.9454,  0.5313],
-    #     [-8.6476, -10.769],
-    #     [19.0824, -2.8959],
-    #     [ 0,       0]
-    # ])
-
-    # C = np.array([
-    #     [1, 0, 0, 0],
-    #     [0, 0, 0, 1]
-    # ])
+    dt = 0.2
+    time_steps = int(T_total / dt) + 1
+    T = time_steps - 1  # simulation horizon
     
-    A = np.array([
-        [-0.0649,  0.0787,  0.1705, -0.5616],
-        [ 0.0386, -0.939,   4.2277,  0.0198],
-        [ 0.1121, -0.4254, -0.7968,  0],
-        [ 0,       0,       1,       0]
-    ])
-
-    B = np.array([
-        [-0.9454,  0.5313],
-        [-8.6476, -10.769],
-        [19.0824, -2.8959],
-        [ 0,       0]
-    ])
-
-    C = np.array([
-        [1, 0, 0, 0],
-        [0, 0, 0, 1]
-    ])
+    # Use the initial desired state as the system's initial state.
+    initial_trajectory = desired_traj[:, 0].reshape(-1, 1)
+    
+    # Discrete-time system dynamics (4D double integrator)
+    A = np.array([[1, dt, 0, 0],
+                  [0, 1, 0, 0],
+                  [0, 0, 1, dt],
+                  [0, 0, 0, 1]])
+    B = np.array([[0.5 * dt**2, 0],
+                  [dt, 0],
+                  [0, 0.5 * dt**2],
+                  [0, dt]])
+    C = np.array([[1, 0, 0, 0],
+                  [0, 0, 1, 0]])
     system_data = (A, C)
     
-    # --- True Distribution Parameters ---
+    nx = 4; nw = 4; nu = 2; ny = 2
     if dist == "normal":
         mu_w = 0.0 * np.ones((nw, 1))
         Sigma_w = 0.01 * np.eye(nw)
         x0_mean = 0.0 * np.ones((nx, 1))
         x0_cov = 0.01 * np.eye(nx)
-        w_max = None; w_min = None; x0_max = None; x0_min = None
+        w_max = w_min = x0_max = x0_min = None
     elif dist == "quadratic":
-        w_max = 1.0 * np.ones(nx)
-        w_min = -2.0 * np.ones(nx)
+        w_max = 0.1 * np.ones(nx)
+        w_min = -0.1 * np.ones(nx)
         mu_w = (0.5 * (w_max + w_min))[:, None]
         Sigma_w = 3.0/20.0 * np.diag((w_max - w_min)**2)
-        x0_max = 0.21 * np.ones(nx)
-        x0_min = 0.19 * np.ones(nx)
+        x0_max = 0.1 * np.ones(nx)
+        x0_min = -0.1 * np.ones(nx)
         x0_mean = (0.5 * (x0_max + x0_min))[:, None]
         x0_cov = 3.0/20.0 * np.diag((x0_max - x0_min)**2)
     else:
@@ -223,17 +218,17 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     if noise_dist == "normal":
         mu_v = 0.0 * np.ones((ny, 1))
         M = 0.01 * np.eye(ny)
-        v_max = None; v_min = None
+        v_max = v_min = None
     elif noise_dist == "quadratic":
-        v_min = -1.0 * np.ones(ny)
-        v_max = 2.0 * np.ones(ny)
+        v_min = -0.1 * np.ones(ny)
+        v_max = 0.1 * np.ones(ny)
         mu_v = (0.5 * (v_max + v_min))[:, None]
         M = 3.0/20.0 * np.diag((v_max - v_min)**2)
     else:
         raise ValueError("Unsupported measurement noise distribution.")
     
     # --- Generate Data for EM ---
-    N_data = 100
+    N_data = 5
     _, y_all_em = generate_data(N_data, nx, ny, A, C,
                                 mu_w, Sigma_w, mu_v, M,
                                 x0_mean, x0_cov, x0_max, x0_min,
@@ -275,7 +270,6 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     Sigma_v_hat = enforce_positive_definiteness(Sigma_v_hat)
     Sigma_x0_hat = enforce_positive_definiteness(Sigma_x0_hat)
     
-    # Nominal parameters: use known mean values and EM–estimated covariances.
     nominal_mu_w    = mu_w
     nominal_Sigma_w = Sigma_w_hat.copy()
     nominal_mu_v    = mu_v
@@ -284,8 +278,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
     nominal_x0_cov  = Sigma_x0_hat.copy()
     
     # --- Compute LQR Gain ---
-    Q_lqr = np.eye(nx)
-    R_lqr = np.eye(B.shape[1])
+    Q_lqr = np.diag([5, 0.1, 5, 0.1])
+    R_lqr = 1 * np.eye(2)
     K_lqr = compute_lqr_gain(A, B, Q_lqr, R_lqr)
     if not is_stabilizable(A, B):
         print("Warning: (A, B) is not stabilizable!")
@@ -301,7 +295,6 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
         exit()
     
     # --- Simulation Functions for Each Filter ---
-    # Note: We now return the full simulation result (res) so that the state trajectory is available.
     def run_simulation_finite(sim_idx_local):
         estimator = KF(
             T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
@@ -313,13 +306,13 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             nominal_mu_v=nominal_mu_v, nominal_M=nominal_M,
             x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min)
         estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
+        res = estimator.forward_track(desired_traj)
+        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr, desired_traj)
         return res, cost
 
     def run_simulation_inf_kf(sim_idx_local):
         estimator = KF_inf(
-            T=T, dist=dist, noise_dist=noise_dist, system_data=system_data, B=B,
+            T=T, noise_dist=noise_dist, dist=dist, system_data=system_data, B=B,
             true_x0_mean=x0_mean, true_x0_cov=x0_cov,
             true_mu_w=mu_w, true_Sigma_w=Sigma_w,
             true_mu_v=mu_v, true_M=M,
@@ -328,8 +321,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             nominal_mu_v=nominal_mu_v, nominal_M=nominal_M,
             x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min)
         estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
+        res = estimator.forward_track(desired_traj)
+        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr, desired_traj)
         return res, cost
 
     def run_simulation_inf_drkf(sim_idx_local):
@@ -344,8 +337,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min,
             theta_x=robust_val, theta_v=robust_val)
         estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
+        res = estimator.forward_track(desired_traj)
+        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr, desired_traj)
         return res, cost
 
     def run_simulation_bcot(sim_idx_local):
@@ -360,8 +353,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             radius=robust_val, maxit=20,
             x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min)
         estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
+        res = estimator.forward_track(desired_traj)
+        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr, desired_traj)
         return res, cost
 
     def run_simulation_risk(sim_idx_local):
@@ -370,126 +363,153 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val,
             true_x0_mean=x0_mean, true_x0_cov=x0_cov,
             true_mu_w=mu_w, true_Sigma_w=Sigma_w,
             true_mu_v=mu_v, true_M=M,
-            nominal_x0_mean=x0_mean,  # known initial state mean
+            nominal_x0_mean=x0_mean,        # known initial state mean
             nominal_x0_cov=nominal_x0_cov,
-            nominal_mu_w=mu_w,        # known process noise mean
+            nominal_mu_w=mu_w,              # known process noise mean
             nominal_Sigma_w=nominal_Sigma_w,
-            nominal_mu_v=mu_v,        # known measurement noise mean
+            nominal_mu_v=mu_v,              # known measurement noise mean
             nominal_M=nominal_M,
             theta_rs=robust_val,
             x0_max=x0_max, x0_min=x0_min, w_max=w_max, w_min=w_min, v_max=v_max, v_min=v_min)
         estimator.K_lqr = K_lqr
-        res = estimator.forward()
-        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr)
+        res = estimator.forward_track(desired_traj)
+        cost = compute_lqr_cost(res, Q_lqr, R_lqr, K_lqr, desired_traj)
         return res, cost
 
-    # Run simulations for each filter.
-    results_finite = [run_simulation_finite(i) for i in range(num_sim)]
-    mse_finite_all = np.array([r[0]['mse'] for r in results_finite])
-    cost_finite_all = [r[1] for r in results_finite]
-    mse_mean_finite = np.mean(mse_finite_all, axis=0)
-    cost_mean_finite = np.mean(cost_finite_all)
-    rep_state_finite = results_finite[0][0]['state_traj']  # representative state trajectory
+    # --- Run either all filters (phase 1) or only the chosen filter (phase 2)
+    if filter_choice is None:
+        # In phase 1, run each experiment only once (num_sim fixed to 1)
+        results_finite = [run_simulation_finite(i) for i in range(num_sim)]
+        mse_mean_finite = np.mean([np.mean(r[0]['mse']) for r in results_finite])
+        cost_mean_finite = np.mean([r[1] for r in results_finite])
+        rep_state_finite = results_finite[0][0]['state_traj']
 
-    results_inf = [run_simulation_inf_kf(i) for i in range(num_sim)]
-    mse_inf_all = np.array([r[0]['mse'] for r in results_inf])
-    cost_inf_all = [r[1] for r in results_inf]
-    mse_mean_inf = np.mean(mse_inf_all, axis=0)
-    cost_mean_inf = np.mean(cost_inf_all)
-    rep_state_inf = results_inf[0][0]['state_traj']
+        results_inf = [run_simulation_inf_kf(i) for i in range(num_sim)]
+        mse_mean_inf = np.mean([np.mean(r[0]['mse']) for r in results_inf])
+        cost_mean_inf = np.mean([r[1] for r in results_inf])
+        rep_state_inf = results_inf[0][0]['state_traj']
 
-    results_drkf = [run_simulation_inf_drkf(i) for i in range(num_sim)]
-    mse_drkf_all = np.array([r[0]['mse'] for r in results_drkf])
-    cost_drkf_all = [r[1] for r in results_drkf]
-    mse_mean_drkf = np.mean(mse_drkf_all, axis=0)
-    cost_mean_drkf = np.mean(cost_drkf_all)
-    rep_state_drkf = results_drkf[0][0]['state_traj']
+        results_drkf = [run_simulation_inf_drkf(i) for i in range(num_sim)]
+        mse_mean_drkf = np.mean([np.mean(r[0]['mse']) for r in results_drkf])
+        cost_mean_drkf = np.mean([r[1] for r in results_drkf])
+        rep_state_drkf = results_drkf[0][0]['state_traj']
 
-    results_bcot = [run_simulation_bcot(i) for i in range(num_sim)]
-    mse_bcot_all = np.array([r[0]['mse'] for r in results_bcot])
-    cost_bcot_all = [r[1] for r in results_bcot]
-    mse_mean_bcot = np.mean(mse_bcot_all, axis=0)
-    cost_mean_bcot = np.mean(cost_bcot_all)
-    rep_state_bcot = results_bcot[0][0]['state_traj']
+        results_bcot = [run_simulation_bcot(i) for i in range(num_sim)]
+        mse_mean_bcot = np.mean([np.mean(r[0]['mse']) for r in results_bcot])
+        cost_mean_bcot = np.mean([r[1] for r in results_bcot])
+        rep_state_bcot = results_bcot[0][0]['state_traj']
 
-    results_risk = [run_simulation_risk(i) for i in range(num_sim)]
-    mse_risk_all = np.array([r[0]['mse'] for r in results_risk])
-    cost_risk_all = [r[1] for r in results_risk]
-    mse_mean_risk = np.mean(mse_risk_all, axis=0)
-    cost_mean_risk = np.mean(cost_risk_all)
-    rep_state_risk = results_risk[0][0]['state_traj']
-    
-    # Return candidate results for this robust value. We also include one representative state trajectory per filter.
-    return {
-        'finite': mse_mean_finite,
-        'finite_state': rep_state_finite,
-        'inf': mse_mean_inf,
-        'inf_state': rep_state_inf,
-        'drkf_inf': mse_mean_drkf,
-        'drkf_inf_state': rep_state_drkf,
-        'bcot': mse_mean_bcot,
-        'bcot_state': rep_state_bcot,
-        'risk': mse_mean_risk,
-        'risk_state': rep_state_risk,
-        'cost': {
-            'finite': cost_mean_finite,
-            'inf': cost_mean_inf,
-            'drkf_inf': cost_mean_drkf,
-            'bcot': cost_mean_bcot,
-            'risk': cost_mean_risk
+        results_risk = [run_simulation_risk(i) for i in range(num_sim)]
+        mse_mean_risk = np.mean([np.mean(r[0]['mse']) for r in results_risk])
+        cost_mean_risk = np.mean([r[1] for r in results_risk])
+        rep_state_risk = results_risk[0][0]['state_traj']
+        
+        overall_results = {
+            'finite': mse_mean_finite,
+            'finite_state': rep_state_finite,
+            'inf': mse_mean_inf,
+            'inf_state': rep_state_inf,
+            'drkf_inf': mse_mean_drkf,
+            'drkf_inf_state': rep_state_drkf,
+            'bcot': mse_mean_bcot,
+            'bcot_state': rep_state_bcot,
+            'risk': mse_mean_risk,
+            'risk_state': rep_state_risk,
+            'cost': {
+                'finite': cost_mean_finite,
+                'inf': cost_mean_inf,
+                'drkf_inf': cost_mean_drkf,
+                'bcot': cost_mean_bcot,
+                'risk': cost_mean_risk
+            }
         }
-    }
+        raw_data = {
+            'finite': results_finite,
+            'inf': results_inf,
+            'drkf_inf': results_drkf,
+            'bcot': results_bcot,
+            'risk': results_risk
+        }
+        return overall_results, raw_data
+    else:
+        if filter_choice == 'finite':
+            results = [run_simulation_finite(i) for i in range(num_sim)]
+        elif filter_choice == 'inf':
+            results = [run_simulation_inf_kf(i) for i in range(num_sim)]
+        elif filter_choice == 'drkf_inf':
+            results = [run_simulation_inf_drkf(i) for i in range(num_sim)]
+        elif filter_choice == 'bcot':
+            results = [run_simulation_bcot(i) for i in range(num_sim)]
+        elif filter_choice == 'risk':
+            results = [run_simulation_risk(i) for i in range(num_sim)]
+        else:
+            raise ValueError("Unknown filter choice")
+        mse_mean = np.mean([np.mean(r[0]['mse']) for r in results])
+        cost_mean = np.mean([r[1] for r in results])
+        rep_state = results[0][0]['state_traj']
+        overall_results = {
+            filter_choice: mse_mean,
+            f"{filter_choice}_state": rep_state,
+            'cost': {
+                filter_choice: cost_mean
+            }
+        }
+        return overall_results, results
 
 # --- Main Routine ---
-def main(dist, noise_dist, num_sim, T, num_exp):
+def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     seed_base = 2024
-    # Define candidate robust parameter values.
-    robust_vals = [0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
-    all_results = {}
-    for robust_val in robust_vals:
-        print(f"Running experiments for robust parameter = {robust_val}")
-        experiments = Parallel(n_jobs=-1)(
-            delayed(run_experiment)(exp_idx, dist, noise_dist, num_sim, T, seed_base, robust_val, 0)
-            for exp_idx in range(num_exp)
-        )
-        # Collect terminal MSE and cost for each filter.
-        cost_keys = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
-        all_cost = [exp['cost'] for exp in experiments]
-        all_mse = {key: [] for key in cost_keys}
-        for exp in experiments:
-            for key in cost_keys:
-                # Append terminal MSE from the representative simulation in each experiment.
-                all_mse[key].append(exp[f"{key}_state"][-1])
-        final_cost = {key: np.mean([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
-        final_cost_std = {key: np.std([exp_cost[key] for exp_cost in all_cost]) for key in cost_keys}
-        final_mse = {key: np.mean(all_mse[key]) for key in cost_keys}
-        final_mse_std = {key: np.std(all_mse[key]) for key in cost_keys}
-        all_results[robust_val] = {
-            'cost': final_cost,
-            'cost_std': final_cost_std,
-            'mse': final_mse,
-            'mse_std': final_mse_std
-        }
-        print(f"Candidate robust parameter {robust_val}: Cost = {final_cost}, Cost std = {final_cost_std}, Terminal MSE = {final_mse}, MSE std = {final_mse_std}")
+    if dist=='normal':
+        robust_vals = [0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+    elif dist=='quadratic':
+        robust_vals = [0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+    desired_traj = generate_desired_trajectory(T_total, trajectory)
     
-    # Now, for each filter, choose the candidate robust parameter that minimizes the average LQR cost.
-    # For standard KF (finite and inf), the robust parameter is not used; we mark them as "N/A".
+    # Define filters (the same keys are used for cost and state trajectories)
     filters = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
+    
+    ########################
+    # Phase 1: Robust Parameter Optimization
+    ########################
+    phase1_repeats = 10  # run each candidate 10 times
+    phase1_results = {}
+    for robust_val in robust_vals:
+        print(f"Phase 1: Running experiments for robust parameter = {robust_val}")
+        # For phase 1, we call run_experiment with num_sim fixed to 1.
+        experiments = Parallel(n_jobs=-1)(
+            delayed(run_experiment)(exp_idx, dist, noise_dist, 1, seed_base, robust_val, T_total, desired_traj)
+            for exp_idx in range(phase1_repeats)
+        )
+        overall_exps = [exp[0] for exp in experiments]
+        cost_keys = filters  # same as ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
+        all_mse = {key: [] for key in cost_keys}
+        all_cost = [exp['cost'] for exp in overall_exps]
+        for exp in overall_exps:
+            for key in cost_keys:
+                all_mse[key].append(np.mean(exp[key]))
+        final_cost = {key: np.mean([ec[key] for ec in all_cost]) for key in cost_keys}
+        final_mse = {key: np.mean(all_mse[key]) for key in cost_keys}
+        rep_state = {filt: overall_exps[0][f"{filt}_state"] for filt in filters}
+        phase1_results[robust_val] = {
+            'cost': final_cost,
+            'mse': final_mse,
+            'state': rep_state
+        }
+        print(f"Candidate robust parameter {robust_val}: Cost = {final_cost}, Average MSE = {final_mse}")
+    
     optimal_results = {}
     for f in filters:
         if f in ['finite', 'inf']:
-            candidate = list(all_results.values())[0]
+            candidate = phase1_results[robust_vals[0]]
             optimal_results[f] = {
-                'robust_val': "N/A",
+                'robust_val': robust_vals[0],
                 'cost': candidate['cost'][f],
-                'cost_std': candidate['cost_std'][f],
-                'mse': candidate['mse'][f],
-                'mse_std': candidate['mse_std'][f]
+                'mse': candidate['mse'][f]
             }
         else:
             best_val = None
             best_cost = np.inf
-            for robust_val, res in all_results.items():
+            for robust_val, res in phase1_results.items():
                 current_cost = res['cost'][f]
                 if current_cost < best_cost:
                     best_cost = current_cost
@@ -497,48 +517,71 @@ def main(dist, noise_dist, num_sim, T, num_exp):
             optimal_results[f] = {
                 'robust_val': best_val,
                 'cost': best_cost,
-                'cost_std': all_results[best_val]['cost_std'][f],
-                'mse': all_results[best_val]['mse'][f],
-                'mse_std': all_results[best_val]['mse_std'][f]
+                'mse': phase1_results[best_val]['mse'][f]
             }
-        print(f"Optimal robust parameter for {f}: {optimal_results[f]['robust_val']} with cost {optimal_results[f]['cost']:.4f} (std {optimal_results[f]['cost_std']:.4f})")
+        print(f"Optimal robust parameter for {f}: {optimal_results[f]['robust_val']}")
     
-    # Sort optimal results by increasing LQR cost.
     sorted_optimal = sorted(optimal_results.items(), key=lambda item: item[1]['cost'])
     print("\nSummary of Optimal Results (sorted by LQR cost):")
     for filt, info in sorted_optimal:
-        print(f"{filt}: Optimal robust parameter = {info['robust_val']}, "
-              f"LQR cost = {info['cost']:.4f} (std {info['cost_std']:.4f}), Terminal MSE = {info['mse']:.4f} (std {info['mse_std']:.4f})")
+        print(f"{filt}: Optimal robust parameter = {info['robust_val']}, LQR cost = {info['cost']:.4f}, Average MSE = {info['mse']:.4f}")
+    
+    ########################
+    # Phase 2: Final Simulations using Optimal Parameters
+    ########################
+    phase2_data = {}
+    for filt in filters:
+        robust_val_for_filter = optimal_results[filt]['robust_val']
+        #print(f"Phase 2: Running {num_sim} simulations for filter {filt} with robust parameter {robust_val_for_filter}")
+        # In phase 2 we run  per filter.
+        experiments = Parallel(n_jobs=-1)(
+            delayed(run_experiment)(exp_idx, dist, noise_dist, 1, seed_base, robust_val_for_filter, T_total, desired_traj, filter_choice=filt)
+            for exp_idx in range(num_exp)
+        )
+        # Save both the overall results and the raw experiments data.
+        phase2_data[filt] = {
+            'overall_results': experiments[0][0],
+            'raw_data': experiments[0][1]
+        }
     
     results_path = "./results/estimator7/"
     if not os.path.exists(results_path):
         os.makedirs(results_path)
-    save_data(os.path.join(results_path, f'overall_results_{dist}_{noise_dist}.pkl'), all_results)
-    save_data(os.path.join(results_path, f'optimal_results_{dist}_{noise_dist}.pkl'), optimal_results)
-    print("LQR with state estimation experiments completed for all robust parameters.")
+    save_data(os.path.join(results_path, f'phase2_data_{dist}_{noise_dist}.pkl'), phase2_data)
+    print("Phase 2 simulations completed.")
     
-    # --- Plot Representative State Trajectories ---
-    # For each filter, re-run one simulation with the chosen optimal robust parameter.
-    # For standard KF (finite and inf), robust parameter is not used so we choose the first candidate.
-    filter_names = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
+    # --- Plot Representative 2D Trajectories ---
     rep_state_trajs = {}
-    time_vec = np.arange(T+1)
-    for filt in filter_names:
-        if filt in ['finite', 'inf']:
-            robust_val_for_filter = robust_vals[0]
-        else:
-            robust_val_for_filter = optimal_results[filt]['robust_val']
-        # Run one experiment (num_sim=1) with the chosen robust parameter.
-        rep_exp = run_experiment(0, dist, noise_dist, 1, T, seed_base, robust_val_for_filter, 0)
-        rep_state_trajs[filt] = rep_exp[f"{filt}_state"]
-        # Plot the first coordinate of the state trajectory.
-        plt.plot(time_vec, rep_state_trajs[filt][:, 0, 0], label=filt)
-    plt.xlabel("Time Step")
-    plt.ylabel("State x[0]")
-    plt.title("Representative State Trajectories for Each Filter")
-    plt.legend()
+    for filt in filters:
+        rep_state_trajs[filt] = phase2_data[filt]['overall_results'][f"{filt}_state"]
+    
+    plt.figure(figsize=(10, 8))
+    x_desired = desired_traj[0, :]
+    y_desired = desired_traj[2, :]
+    plt.plot(x_desired, y_desired, 'k--', linewidth=2, label='desired')
+    plt.scatter(x_desired[0], y_desired[0], s=100, marker='*', color='k', label='desired start')
+    plt.scatter(x_desired[-1], y_desired[-1], s=100, marker='D', color='k', label='desired end')
+    label_mapping = {
+        'finite': "Standard KF (finite)",
+        'inf': "Standard KF (infinite)",
+        'bcot': "BCOT",
+        'risk': "Risk-Sensitive",
+        'drkf_inf': "DRKF (ours)"
+    }
+    for filt in filters:
+        traj = rep_state_trajs[filt]
+        x_positions = traj[:, 0, 0]
+        y_positions = traj[:, 2, 0]
+        plt.plot(x_positions, y_positions, marker='o', linestyle='-', label=label_mapping[filt])
+    plt.xlabel('x position', fontsize=14)
+    plt.ylabel('y position', fontsize=14)
+    plt.legend(fontsize=12)
     plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(results_path, '2d_trajectories.png'), dpi=300, bbox_inches='tight')
     plt.show()
+    
+    return phase2_data
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -547,10 +590,12 @@ if __name__ == "__main__":
     parser.add_argument('--noise_dist', default="normal", type=str,
                         help="Measurement noise distribution (normal or quadratic)")
     parser.add_argument('--num_sim', default=1, type=int,
-                        help="Number of simulation runs per experiment")
-    parser.add_argument('--horizon', default=20, type=int,
-                        help="Time horizon T")
-    parser.add_argument('--num_exp', default=1, type=int,
-                        help="Number of independent experiments")
+                        help="Number of simulation runs per experiment in phase 2")
+    parser.add_argument('--num_exp', default=100, type=int,
+                        help="Number of independent experiments (kept 1 for phase 2)")
+    parser.add_argument('--time', default=10, type=int,
+                        help="Total simulation time")
+    parser.add_argument('--trajectory', default="curvy", type=str,
+                        help="Desired trajectory type (curvy or circular)")
     args = parser.parse_args()
-    main(args.dist, args.noise_dist, args.num_sim, args.horizon, args.num_exp)
+    main(args.dist, args.noise_dist, args.num_sim, args.num_exp, args.time, args.trajectory)
