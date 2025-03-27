@@ -13,12 +13,12 @@ Then, five filters (KF, KF_inf, DRKF, BCOT, and risk–sensitive filter)
 (from the folder LQR_with_estimator) are run in closed–loop with exactly the same controller.
 In phase 1, each candidate robust parameter (for the robust filters) is evaluated phase1_repeats times
 to find the optimal robust parameter (standard Kalman filters use a default value).
-Then, in phase 2, each filter is simulated num_sim times using its optimal robust parameter.
+Then, in phase 2, each filter is simulated num_exp times using its optimal robust parameter.
 The performance (averaged MSE over the entire horizon and LQR cost) of each filter is saved,
 and a 2D trajectory plot is generated.
     
 Usage example:
-    python main7.py --dist normal --noise_dist normal --num_sim 1 --time 10 --trajectory curvy
+    python main7.py --dist normal --noise_dist normal --num_sim 1 --num_exp 100 --time 10 --trajectory curvy
 """
 
 import numpy as np
@@ -532,16 +532,14 @@ def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     phase2_data = {}
     for filt in filters:
         robust_val_for_filter = optimal_results[filt]['robust_val']
-        #print(f"Phase 2: Running {num_sim} simulations for filter {filt} with robust parameter {robust_val_for_filter}")
-        # In phase 2 we run  per filter.
+        print(f"Phase 2: Running {num_exp} experiments for filter {filt} with robust parameter {robust_val_for_filter}")
         experiments = Parallel(n_jobs=-1)(
             delayed(run_experiment)(exp_idx, dist, noise_dist, 1, seed_base, robust_val_for_filter, T_total, desired_traj, filter_choice=filt)
             for exp_idx in range(num_exp)
         )
-        # Save both the overall results and the raw experiments data.
         phase2_data[filt] = {
-            'overall_results': experiments[0][0],
-            'raw_data': experiments[0][1]
+            'overall_results': [exp[0] for exp in experiments],
+            'raw_data': [exp[1] for exp in experiments]
         }
     
     results_path = "./results/estimator7/"
@@ -553,7 +551,8 @@ def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     # --- Plot Representative 2D Trajectories ---
     rep_state_trajs = {}
     for filt in filters:
-        rep_state_trajs[filt] = phase2_data[filt]['overall_results'][f"{filt}_state"]
+        # Use the first experiment's overall results as the representative trajectory.
+        rep_state_trajs[filt] = phase2_data[filt]['overall_results'][0][f"{filt}_state"]
     
     plt.figure(figsize=(10, 8))
     x_desired = desired_traj[0, :]
@@ -592,7 +591,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_sim', default=1, type=int,
                         help="Number of simulation runs per experiment in phase 2")
     parser.add_argument('--num_exp', default=100, type=int,
-                        help="Number of independent experiments (kept 1 for phase 2)")
+                        help="Number of independent experiments in phase 2")
     parser.add_argument('--time', default=10, type=int,
                         help="Total simulation time")
     parser.add_argument('--trajectory', default="curvy", type=str,
