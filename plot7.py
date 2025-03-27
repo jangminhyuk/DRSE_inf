@@ -6,14 +6,14 @@ plot7.py
 This script reads the phase 2 experiment results data from the LQR with state estimation experiments,
 then:
   1. Draws a trajectory plot for each state (4 plots total), showing the evolution over time for
-     each filter. For robust filters the optimal robust parameter is used (labeled as “optimal”).
-     Additionally, for the position states (x and y), the desired trajectory is plotted.
+     each filter. For robust filters the optimal robust parameter is used (the legend will show
+     “(optimal, $\theta=...$)”). Additionally, for the position states (x and y), the desired
+     trajectory is plotted.
   2. For the three filters with the best LQR cost (using the optimal robust parameter), draws a combined
      histogram for LQR cost and a combined histogram for averaged MSE. In each histogram, all three
-     filters are plotted in the same figure with different pastel colors (blue, red, and green, with our
-     DRKF filter always in green), using alpha transparency. A vertical dotted line in the same color marks
-     the average value for each filter, and a grid is added.
-
+     filters are plotted in the same figure with different pastel colors (blue, red, and green—with DRKF always green),
+     using alpha transparency. A vertical dashed line in the same color marks the mean value.
+     
 Usage:
     python plot7.py --dist normal --noise_dist normal --time 10 --trajectory curvy
 """
@@ -62,9 +62,8 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
         'bcot': "BCOT",
         'risk': "Risk-Sensitive"
     }
-    # Plot order (DRKF is plotted last).
+    # Desired plot order.
     filters_order = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
-    # Define a color mapping.
     color_mapping = {
         'finite': 'tab:blue',
         'inf': 'tab:red',
@@ -82,18 +81,19 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
     
     for state_idx in range(4):
         plt.figure(figsize=(8,6))
-        # For x and y positions, plot the desired trajectory.
         if state_idx == 0:
             plt.plot(time, desired_traj[0, :], 'k--', linewidth=2, label='Desired x')
         elif state_idx == 2:
             plt.plot(time, desired_traj[2, :], 'k--', linewidth=2, label='Desired y')
         for filt in filters_order:
             traj = rep_state_trajs[filt]
-            # traj is assumed to be an array of shape (T+1, state_dim, 1)
             state_values = traj[:, state_idx, 0]
-            # Append "(optimal)" for robust filters.
             if filt in ['drkf_inf', 'bcot', 'risk']:
-                label = f"{filter_names[filt]} (optimal)"
+                optimal_param = phase2_data[filt].get('optimal_param', None)
+                if optimal_param is not None:
+                    label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+                else:
+                    label = f"{filter_names[filt]} (optimal)"
             else:
                 label = filter_names[filt]
             plt.plot(time, state_values, marker='o', linestyle='-', color=color_mapping[filt], label=label)
@@ -110,7 +110,6 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
         plt.show()
 
 def plot_histograms(phase2_data):
-    # Official filter names.
     filter_names = {
         'finite': "Standard KF (finite)",
         'inf': "Standard KF (infinite)",
@@ -120,39 +119,42 @@ def plot_histograms(phase2_data):
     }
     filters = ['finite', 'inf', 'drkf_inf', 'bcot', 'risk']
     
-    # Determine top 3 filters based on average LQR cost (computed from overall_results).
     cost_dict = {}
     for filt in filters:
-        # For each filter, compute the mean cost over all experiments in phase 2.
         exp_costs = [exp['cost'][filt] for exp in phase2_data[filt]['overall_results']]
         cost_dict[filt] = np.mean(exp_costs)
     sorted_filters = sorted(cost_dict.items(), key=lambda item: item[1])
     top3_filters = [item[0] for item in sorted_filters[:3]]
-    # Ensure DRKF appears last in the legend.
     if 'drkf_inf' in top3_filters:
         top3_filters = [filt for filt in top3_filters if filt != 'drkf_inf'] + ['drkf_inf']
-    print("Top three filters based on LQR cost (legend order):", top3_filters)
+    
+    for filt in top3_filters:
+        exp_costs = [exp['cost'][filt] for exp in phase2_data[filt]['overall_results']]
+        exp_mses = [exp[filt] for exp in phase2_data[filt]['overall_results']]
+        mean_cost = np.mean(exp_costs)
+        mean_mse = np.mean(exp_mses)
+        optimal_param = phase2_data[filt].get('optimal_param', None)
+        if optimal_param is not None:
+            print(f"{filter_names[filt]}: Optimal parameter = {optimal_param:.1f}, Mean LQR cost = {mean_cost:.2f}, Mean averaged MSE = {mean_mse:.4f}")
+        else:
+            print(f"{filter_names[filt]}: Mean LQR cost = {mean_cost:.2f}, Mean averaged MSE = {mean_mse:.4f}")
     
     cost_data = {}
     mse_data = {}
-    # For each top filter, loop over all experiments and then over all simulation runs.
     for filt in top3_filters:
-        experiments = phase2_data[filt]['raw_data']  # List of experiments.
+        experiments = phase2_data[filt]['raw_data']
         costs = []
         mses = []
-        for exp in experiments:  # Each exp is a list of simulation runs.
+        for exp in experiments:
             for run in exp:
-                # run is a tuple (result, cost)
                 costs.append(run[1])
                 mses.append(np.mean(run[0]['mse']))
         cost_data[filt] = np.array(costs)
         mse_data[filt] = np.array(mses)
     
-    # Plot histogram for LQR cost.
     all_costs = np.concatenate([cost_data[filt] for filt in top3_filters])
     bins_cost = np.linspace(np.min(all_costs), np.max(all_costs), 101)
     
-    # Define colors: DRKF always green; assign blue and red to the others.
     color_map = {}
     for i, filt in enumerate(top3_filters):
         if filt == 'drkf_inf':
@@ -164,7 +166,14 @@ def plot_histograms(phase2_data):
     
     plt.figure(figsize=(8,6))
     for filt in top3_filters:
-        label = filter_names[filt]
+        if filt in ['drkf_inf', 'bcot', 'risk']:
+            optimal_param = phase2_data[filt].get('optimal_param', None)
+            if optimal_param is not None:
+                label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+            else:
+                label = f"{filter_names[filt]} (optimal)"
+        else:
+            label = filter_names[filt]
         plt.hist(cost_data[filt], bins=bins_cost, alpha=0.5, color=color_map[filt],
                  label=label, linewidth=0)
         avg_cost = np.mean(cost_data[filt])
@@ -180,13 +189,19 @@ def plot_histograms(phase2_data):
     plt.savefig(os.path.join("results", "estimator7", 'combined_histogram_lqr_cost.png'), dpi=300, bbox_inches='tight')
     plt.show()
     
-    # Plot histogram for averaged MSE.
     all_mses = np.concatenate([mse_data[filt] for filt in top3_filters])
     bins_mse = np.linspace(np.min(all_mses), np.max(all_mses), 101)
     
     plt.figure(figsize=(8,6))
     for filt in top3_filters:
-        label = filter_names[filt]
+        if filt in ['drkf_inf', 'bcot', 'risk']:
+            optimal_param = phase2_data[filt].get('optimal_param', None)
+            if optimal_param is not None:
+                label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+            else:
+                label = f"{filter_names[filt]} (optimal)"
+        else:
+            label = filter_names[filt]
         plt.hist(mse_data[filt], bins=bins_mse, alpha=0.5, color=color_map[filt],
                  label=label, linewidth=0)
         avg_mse = np.mean(mse_data[filt])

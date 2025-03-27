@@ -537,9 +537,12 @@ def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
             delayed(run_experiment)(exp_idx, dist, noise_dist, 1, seed_base, robust_val_for_filter, T_total, desired_traj, filter_choice=filt)
             for exp_idx in range(num_exp)
         )
+        overall_results_list = [exp[0] for exp in experiments]
+        raw_data_list = [exp[1] for exp in experiments]
         phase2_data[filt] = {
-            'overall_results': [exp[0] for exp in experiments],
-            'raw_data': [exp[1] for exp in experiments]
+            'overall_results': overall_results_list,
+            'raw_data': raw_data_list,
+            'optimal_param': robust_val_for_filter  # Store the optimal parameter!
         }
     
     results_path = "./results/estimator7/"
