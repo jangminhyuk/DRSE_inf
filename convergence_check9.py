@@ -119,9 +119,9 @@ def dr_kf_solve_measurement_inf(A, C, Sigma_w_nom, Sigma_v_nom, theta_x, initial
     
     # Define tighter MOSEK tolerances for a more precise solution.
     mosek_params = {
-        "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-6,
-        "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-6,
-        "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-6
+        "MSK_DPAR_INTPNT_CO_TOL_REL_GAP": 1e-8,
+        "MSK_DPAR_INTPNT_CO_TOL_PFEAS": 1e-8,
+        "MSK_DPAR_INTPNT_CO_TOL_DFEAS": 1e-8
     }
     # Optionally assign warm-start values
     if initial_guess_Sigma_x is not None:
@@ -315,7 +315,7 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
             O = control.obsv(A, C)
             observable = (np.linalg.matrix_rank(O) == n)
             
-            # Check reachability of (A, sqrt(Sigma_w_nom)).
+            # Check controlability of (A, sqrt(Sigma_w_nom)).
             try:
                 B = np.linalg.cholesky(Sigma_w_nom)
             except np.linalg.LinAlgError:
@@ -345,7 +345,7 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
         Sigma_x_minus_list = []
 
         # tolerance for early stopping
-        trace_tol_percent_ = 1
+        trace_tol_percent_ = 2
         
         # Compute the infinite-horizon covariance using the SDP formulation
         Sigma_x_inf, Sigma_x_minus_hat_ss = dr_kf_solve_measurement_inf(A, C, Sigma_w_nom, Sigma_v_nom, theta_max)
@@ -414,7 +414,7 @@ if __name__=="__main__":
         # For each experiment in the batch, generate a new seed from the master RNG.
         seeds = [get_new_seed() for _ in range(batch_size)]
         results = Parallel(n_jobs=-1)(
-            delayed(run_dr_kf_once)(n=5, m=5, steps=100, T=10, q=20, dist_type="normal", tol=tol, seed=seed)
+            delayed(run_dr_kf_once)(n=2, m=2, steps=100, T=5, q=20, dist_type="normal", tol=tol, seed=seed)
             for seed in seeds
         )
         for res in results:
@@ -427,7 +427,7 @@ if __name__=="__main__":
                 if len(valid_experiments) >= num_exp:
                     break
 
-    success_rate = (success_count / num_exp) * 100
+    success_rate = 100 - (success_count / num_exp) * 100
     print("\n==================================================")
     print("\n Parallel Computation finished!!")
     print(f"Convergence success rate: {success_count}/{num_exp} = {success_rate:.2f}%")
@@ -466,7 +466,8 @@ if __name__=="__main__":
 
     print("\n==================================================")
     print(f"Number of experiments with trace percent difference > ±{trace_tol_percent}%: {len(failed_experiments)}")
-
+    success_rate_p =  100 - (len(failed_experiments))/num_exp * 100
+    print(f"Success Rate : {success_rate_p} %")
     # --------------------------------------------
     # Plotting trace convergence for failed experiments
     # --------------------------------------------

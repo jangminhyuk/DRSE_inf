@@ -86,7 +86,6 @@ def check_assumptions(A, Sigma_w_nom, C, Sigma_v_nom, T):
 def dr_kf_solve_measurement_inf(A, C, Sigma_w_nom, Sigma_v_nom, theta_x, delta=1e-6):
     n = C.shape[1]
     m = Sigma_v_nom.shape[0]
-    #Z_var = cp.Variable((m, m), PSD=True)
     Sigma_x_var = cp.Variable((n, n), PSD=True)
     Sigma_x_minus_var = cp.Variable((n, n), PSD=True)
     Sigma_x_minus_hat_var = cp.Variable((n, n), PSD=True)
@@ -265,7 +264,7 @@ def compute_theta_max(A, C, Sigma_w_nom, Sigma_v_nom, phi_T, q=100, T=None):
     theta_max = term - np.sqrt(trace_P)
     return theta_max
 
-def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1e-4):
+def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1e-4, tol_percentage=1e-4):
     try:
         A = np.array([[0.1, 1], [0, 1.2]])
         Sigma_w_nom = np.eye(2)
@@ -284,6 +283,10 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
         Sigma_x_minus = np.eye(n)
         posterior_list = []
         conv_norms = []
+        trace_rel_diff_list = []  # List to store relative trace differences
+        
+        # Compute the infinite-horizon covariance using the SDP formulation
+        Sigma_x_inf = dr_kf_solve_measurement_inf(A, C, Sigma_w_nom, Sigma_v_nom, theta_max)
         
         for step in range(steps):
             try:
@@ -291,12 +294,20 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
             except cp.error.SolverError:
                 return None
             posterior_list.append(Sigma_x_sol)
+            
+            # Compute the relative trace difference
+            current_rel_trace_diff = abs(np.trace(Sigma_x_inf) - np.trace(Sigma_x_sol)) / np.trace(Sigma_x_inf)
+            trace_rel_diff_list.append(current_rel_trace_diff)
+            
             if step > 0:
                 diff_norm = np.linalg.norm(posterior_list[step] - posterior_list[step-1], 'fro')
                 conv_norms.append(diff_norm)
-                if diff_norm < tol:
-                    print(f"Early stopping at iteration {step} with convergence norm {diff_norm:.4e}")
-                    break
+                # if diff_norm < tol:
+                #     print(f"Early stopping at iteration {step} with convergence norm {diff_norm:.4e}")
+                #     break
+                # if current_rel_trace_diff < tol_percentage:
+                #     print(f"Early stopping at iteration {step} with relative trace difference {current_rel_trace_diff:.4e}")
+                #     break
             Sigma_x_minus = A @ Sigma_x_sol @ A.T + Sigma_w_nom
             
         print("--------------------------------------------------")
@@ -304,8 +315,6 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
         print("Calculated theta_max:", theta_max)
         print("--------------------------------------------------")
         
-        # Compute the infinite-horizon covariance using the SDP formulation
-        Sigma_x_inf = dr_kf_solve_measurement_inf(A, C, Sigma_w_nom, Sigma_v_nom, theta_max)
         return {
             "A": A,
             "Sigma_w_nom": Sigma_w_nom,
@@ -315,13 +324,16 @@ def run_dr_kf_once(n=10, m=10, steps=200, T=20, q=100, dist_type="normal", tol=1
             "theta_max": theta_max,
             "posterior_list": posterior_list,
             "conv_norms": conv_norms,
+            "trace_rel_diff_list": trace_rel_diff_list,
             "Sigma_x_inf": Sigma_x_inf
         }
-    except (cp.error.SolverError, Exception):
+    except (cp.error.SolverError, Exception) as e:
+        print("Exception:", e)
         return None
 
 if __name__=="__main__":
-    tol = 1e-6  # convergence tolerance for final norm
+    tol = 1e-5  # convergence tolerance for final norm
+    tol_percentage = 1e-5  # relative trace difference tolerance for early stopping
     num_exp = 1  # number of valid experiments to collect
     success_count = 0
     valid_experiments = []
@@ -331,7 +343,7 @@ if __name__=="__main__":
     # Run with longer time horizon: steps increased to 1000
     while len(valid_experiments) < num_exp:
         results = Parallel(n_jobs=1)(
-            delayed(run_dr_kf_once)(n=2, m=1, steps=1000, T=8, q=20, dist_type="normal", tol=tol)
+            delayed(run_dr_kf_once)(n=2, m=1, steps=20, T=8, q=20, dist_type="normal", tol=tol, tol_percentage=tol_percentage)
             for _ in range(batch_size)
         )
         for res in results:
@@ -370,10 +382,12 @@ if __name__=="__main__":
 
     # Plot the convergence error (posterior vs. converged)
     plt.figure(figsize=(10, 6))
-    plt.semilogy(range(len(errors_conv)), errors_conv,
-                 marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
+    plt.semilogy(range(len(errors_conv)-1), errors_conv[:-1],
+                marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
+    plt.semilogy(len(errors_conv)-1, errors_conv[-1],
+                marker='o', linestyle='None', markersize=5, color='black')
     plt.xlabel('Time Step', fontsize=16)
-    plt.ylabel(r'$\|\Sigma_{x,t}^{*} - \Sigma_{x,\mathrm{converged}}^{*}\|_2$', fontsize=16)
+    plt.ylabel(r'$\|\Sigma_{x,t} - \Sigma_{x,\mathrm{converged}}\|_2$', fontsize=16)
     plt.grid(True, which='both', linestyle='--', linewidth=0.5)
     plt.tick_params(axis='both', which='major', labelsize=14)
     plt.tight_layout()
@@ -385,26 +399,33 @@ if __name__=="__main__":
     plt.semilogy(range(len(errors_inf)), errors_inf,
                  marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
     plt.xlabel('Time Step', fontsize=16)
-    plt.ylabel(r'$\|\Sigma_{x,t}^{*} - \Sigma_{x,ss}^{*}\|_2$', fontsize=16)
-    # Set grid only for major ticks to mimic the first plot
+    plt.ylabel(r'$\|\Sigma_{x,t} - \Sigma_{x,ss}^{*}\|_2$', fontsize=16)
     plt.grid(True, which='major', linestyle='--', linewidth=0.5)
     plt.tick_params(axis='both', which='major', labelsize=14)
     plt.tight_layout()
     plt.savefig('convergence_error_vs_infinite.png', dpi=300, bbox_inches='tight')
     plt.show()
 
-    # Plot the trace difference versus the infinite-horizon solution (using absolute value)
+    # Plot the trace difference versus the infinite-horizon solution (absolute difference)
     plt.figure(figsize=(10, 6))
     plt.semilogy(range(len(trace_diff)), np.abs(trace_diff),
                  marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
     plt.xlabel('Time Step', fontsize=16)
-    plt.ylabel(r'$\left|\mathrm{trace}(\Sigma_{x,t}^{*}) - \mathrm{trace}(\Sigma_{x,ss}^{*})\right|$', fontsize=16)
-    # Again, show grid only for major ticks
+    plt.ylabel(r'$\left|\mathrm{trace}(\Sigma_{x,t}) - \mathrm{trace}(\Sigma_{x,ss}^{*})\right|$', fontsize=16)
     plt.grid(True, which='major', linestyle='--', linewidth=0.5)
     plt.tick_params(axis='both', which='major', labelsize=14)
     plt.tight_layout()
     plt.savefig('trace_difference_vs_infinite.png', dpi=300, bbox_inches='tight')
     plt.show()
 
-
-
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(range(len(res["trace_rel_diff_list"])), res["trace_rel_diff_list"],
+                marker='o', linestyle='-', linewidth=1, markersize=5, color='black')
+    plt.xlabel('Time Step', fontsize=18)
+    plt.ylabel(r'$\left|\frac{\mathrm{trace}(\Sigma_{x,t}) - \mathrm{trace}(\Sigma_{x,ss}^{*})}{\mathrm{trace}(\Sigma_{x,ss}^{*})}\right|$', fontsize=18)
+    plt.grid(True, which='major', linestyle='--', linewidth=0.5)
+    plt.tick_params(axis='both', which='major', labelsize=14)
+    plt.xticks([0, 5, 10, 15, 20])
+    plt.tight_layout()
+    plt.savefig('relative_trace_difference_vs_infinite.png', dpi=300, bbox_inches='tight')
+    plt.show()
