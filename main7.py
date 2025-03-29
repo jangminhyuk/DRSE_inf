@@ -278,8 +278,8 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, seed_base, robust_val, T_
     nominal_x0_cov  = Sigma_x0_hat.copy()
     
     # --- Compute LQR Gain ---
-    Q_lqr = np.diag([5, 0.1, 5, 0.1])
-    R_lqr = 1 * np.eye(2)
+    Q_lqr = np.diag([10, 1, 10, 1])
+    R_lqr = 0.1 * np.eye(2)
     K_lqr = compute_lqr_gain(A, B, Q_lqr, R_lqr)
     if not is_stabilizable(A, B):
         print("Warning: (A, B) is not stabilizable!")
@@ -460,9 +460,9 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, seed_base, robust_val, T_
 def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     seed_base = 2024
     if dist=='normal':
-        robust_vals = [0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
     elif dist=='quadratic':
-        robust_vals = [0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
     desired_traj = generate_desired_trajectory(T_total, trajectory)
     
     # Define filters (the same keys are used for cost and state trajectories)
@@ -471,7 +471,7 @@ def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     ########################
     # Phase 1: Robust Parameter Optimization
     ########################
-    phase1_repeats = 10  # run each candidate 10 times
+    phase1_repeats = 20 
     phase1_results = {}
     for robust_val in robust_vals:
         print(f"Phase 1: Running experiments for robust parameter = {robust_val}")

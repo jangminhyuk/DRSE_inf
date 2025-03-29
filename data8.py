@@ -5,7 +5,7 @@ results_file = "./results/estimator8/overall_results_normal_normal.pkl"
 with open(results_file, 'rb') as f:
     overall_results = pickle.load(f)
 
-robust_params = [0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+robust_params = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
 filter_order = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
 filter_labels = {
     'finite': "Standard KF (finite)",
