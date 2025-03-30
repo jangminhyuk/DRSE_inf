@@ -447,22 +447,29 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, seed_base, robust_val, T_
         mse_mean = np.mean([np.mean(r[0]['mse']) for r in results])
         cost_mean = np.mean([r[1] for r in results])
         rep_state = results[0][0]['state_traj']
+        rep_est_state = results[0][0]['est_state_traj']
+        # Save the list of estimated state trajectories for all experiments
+        all_est_state = [r[0]['est_state_traj'] for r in results]
         overall_results = {
             filter_choice: mse_mean,
             f"{filter_choice}_state": rep_state,
+            f"{filter_choice}_est_state": rep_est_state,
+            'est_state_traj': rep_est_state,  # <-- Added for compatibility with plot7_traj.py
+            f"{filter_choice}_all_est_state": all_est_state,
             'cost': {
                 filter_choice: cost_mean
             }
         }
         return overall_results, results
 
+
 # --- Main Routine ---
 def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     seed_base = 2024
     if dist=='normal':
-        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
     elif dist=='quadratic':
-        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
     desired_traj = generate_desired_trajectory(T_total, trajectory)
     
     # Define filters (the same keys are used for cost and state trajectories)

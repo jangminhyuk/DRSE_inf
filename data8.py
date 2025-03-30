@@ -8,8 +8,8 @@ with open(results_file, 'rb') as f:
 robust_params = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
 filter_order = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
 filter_labels = {
-    'finite': "Standard KF (finite)",
-    'inf': "Standard KF (infinite)",
+    'finite': "Time-varying KF",
+    'inf': "Time-invariant KF",
     'bcot': "BCOT",
     'risk': "Risk-Sensitive",
     'drkf_inf': "DRKF (ours)"
