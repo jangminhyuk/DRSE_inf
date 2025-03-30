@@ -11,11 +11,14 @@ then:
      trajectory is plotted.
   2. For the three filters with the best LQR cost (using the optimal robust parameter), draws a combined
      histogram for LQR cost and a combined histogram for averaged MSE. In each histogram, all three
-     filters are plotted in the same figure with different pastel colors (blue, red, and green—with DRKF always green),
+     filters are plotted in the same figure with different pastel colors (blue, red, green—DRKF always green),
      using alpha transparency. A vertical dashed line in the same color marks the mean value.
-  3. Draws a box plot for all five filters—one for LQR cost and one for averaged MSE. In these plots, the filters are
-     ordered professionally (with DRKF [ours] shown as the last category).
-     
+  3. Draws a box plot and a violin plot for all five filters—one for LQR cost and one for averaged MSE—
+     in which the filters are ordered professionally (with DRKF [ours] shown last).
+
+Titles are removed from the plots, and the distribution name (e.g. `_normal`, `_quadratic`) is appended
+to each figure file name.
+
 Usage:
     python plot7.py --dist normal --noise_dist normal --time 10 --trajectory curvy
 """
@@ -54,15 +57,14 @@ def generate_desired_trajectory(T_total, trajectory):
         raise ValueError("Unsupported trajectory type.")
     return np.vstack((x_d, vx_d, y_d, vy_d)), time
 
-def plot_state_trajectories(phase2_data, desired_traj, time):
+def plot_state_trajectories(phase2_data, desired_traj, time, dist_suffix):
     filter_names = {
-        'finite': "Standard KF (finite)",
-        'inf': "Standard KF (infinite)",
+        'finite': "Time-varying KF",
+        'inf': "Time-invariant KF",
         'drkf_inf': "DRKF (ours)",
         'bcot': "BCOT",
         'risk': "Risk-Sensitive"
     }
-    # Desired order: DRKF appears last.
     filters_order = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
     color_mapping = {
         'finite': 'tab:blue',
@@ -71,9 +73,10 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
         'risk': 'tab:gray',
         'drkf_inf': 'tab:green'
     }
-    # Use the first experiment's overall results as representative trajectories.
-    rep_state_trajs = {filt: phase2_data[filt]['overall_results'][0][f"{filt}_state"]
-                       for filt in filters_order}
+    rep_state_trajs = {
+        filt: phase2_data[filt]['overall_results'][0][f"{filt}_state"]
+        for filt in filters_order
+    }
     
     state_names = ['x position', 'x velocity', 'y position', 'y velocity']
     
@@ -89,7 +92,7 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
             if filt in ['drkf_inf', 'bcot', 'risk']:
                 optimal_param = phase2_data[filt].get('optimal_param', None)
                 if optimal_param is not None:
-                    label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+                    label = rf"{filter_names[filt]} ($\theta={optimal_param:.1f}$)"
                 else:
                     label = f"{filter_names[filt]} (optimal)"
             else:
@@ -97,20 +100,20 @@ def plot_state_trajectories(phase2_data, desired_traj, time):
             plt.plot(time, state_values, marker='o', linestyle='-', color=color_mapping[filt], label=label)
         plt.xlabel('Time (s)', fontsize=16)
         plt.ylabel(state_names[state_idx], fontsize=16)
-        plt.title(f'Trajectory for {state_names[state_idx]}', fontsize=16)
         plt.xticks(fontsize=14)
         plt.yticks(fontsize=14)
         plt.legend(fontsize=14)
         plt.grid(True)
         plt.tight_layout()
-        save_path = os.path.join("results", "estimator7", f'state_{state_idx}_trajectory.png')
+        save_name = f"state_{state_idx}_trajectory{dist_suffix}.png"
+        save_path = os.path.join("results", "estimator7", save_name)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
 
-def plot_histograms(phase2_data):
+def plot_histograms(phase2_data, dist_suffix):
     filter_names = {
-        'finite': "Standard KF (finite)",
-        'inf': "Standard KF (infinite)",
+        'finite': "Time-varying KF",
+        'inf': "Time-invariant KF",
         'drkf_inf': "DRKF (ours)",
         'bcot': "BCOT",
         'risk': "Risk-Sensitive"
@@ -124,8 +127,9 @@ def plot_histograms(phase2_data):
     sorted_filters = sorted(cost_dict.items(), key=lambda item: item[1])
     top3_filters = [item[0] for item in sorted_filters[:3]]
     if 'drkf_inf' in top3_filters:
-        top3_filters = [filt for filt in top3_filters if filt != 'drkf_inf'] + ['drkf_inf']
+        top3_filters = [f for f in top3_filters if f != 'drkf_inf'] + ['drkf_inf']
     
+    # Print info
     for filt in top3_filters:
         exp_costs = [exp['cost'][filt] for exp in phase2_data[filt]['overall_results']]
         exp_mses = [exp[filt] for exp in phase2_data[filt]['overall_results']]
@@ -133,7 +137,8 @@ def plot_histograms(phase2_data):
         mean_mse = np.mean(exp_mses)
         optimal_param = phase2_data[filt].get('optimal_param', None)
         if optimal_param is not None:
-            print(f"{filter_names[filt]}: Optimal parameter = {optimal_param:.1f}, Mean LQR cost = {mean_cost:.2f}, Mean averaged MSE = {mean_mse:.4f}")
+            print(f"{filter_names[filt]}: Optimal parameter = {optimal_param:.1f}, "
+                  f"Mean LQR cost = {mean_cost:.2f}, Mean averaged MSE = {mean_mse:.4f}")
         else:
             print(f"{filter_names[filt]}: Mean LQR cost = {mean_cost:.2f}, Mean averaged MSE = {mean_mse:.4f}")
     
@@ -150,7 +155,7 @@ def plot_histograms(phase2_data):
         cost_data[filt] = np.array(costs)
         mse_data[filt] = np.array(mses)
     
-    all_costs = np.concatenate([cost_data[filt] for filt in top3_filters])
+    all_costs = np.concatenate([cost_data[f] for f in top3_filters])
     bins_cost = np.linspace(np.min(all_costs), np.max(all_costs), 81)
     
     color_map = {}
@@ -162,32 +167,34 @@ def plot_histograms(phase2_data):
         else:
             color_map[filt] = 'tab:red'
     
+    # Hist for LQR cost
     plt.figure(figsize=(8,6))
     for filt in top3_filters:
         if filt in ['drkf_inf', 'bcot', 'risk']:
             optimal_param = phase2_data[filt].get('optimal_param', None)
             if optimal_param is not None:
-                label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+                label = rf"{filter_names[filt]} ($\theta={optimal_param:.1f}$)"
             else:
                 label = f"{filter_names[filt]} (optimal)"
         else:
             label = filter_names[filt]
-        plt.hist(cost_data[filt], bins=bins_cost, alpha=0.5, color=color_map[filt],
-                 label=label, linewidth=0)
+        plt.hist(cost_data[filt], bins=bins_cost, alpha=0.5,
+                 color=color_map[filt], label=label, linewidth=0)
         avg_cost = np.mean(cost_data[filt])
         plt.axvline(avg_cost, color=color_map[filt], linestyle='dashed', linewidth=1.5)
     plt.xlabel('LQR Cost', fontsize=16)
     plt.ylabel('Frequency', fontsize=16)
-    plt.title('Histogram of LQR Cost for Top 3 Filters', fontsize=16)
     plt.xticks(fontsize=14)
     plt.yticks(fontsize=14)
     plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join("results", "estimator7", 'combined_histogram_lqr_cost.png'), dpi=300, bbox_inches='tight')
+    save_name = f"combined_histogram_lqr_cost{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
     plt.show()
     
-    all_mses = np.concatenate([mse_data[filt] for filt in top3_filters])
+    # Hist for MSE
+    all_mses = np.concatenate([mse_data[f] for f in top3_filters])
     bins_mse = np.linspace(np.min(all_mses), np.max(all_mses), 81)
     
     plt.figure(figsize=(8,6))
@@ -195,31 +202,31 @@ def plot_histograms(phase2_data):
         if filt in ['drkf_inf', 'bcot', 'risk']:
             optimal_param = phase2_data[filt].get('optimal_param', None)
             if optimal_param is not None:
-                label = rf"{filter_names[filt]} (optimal, $\theta={optimal_param:.1f}$)"
+                label = rf"{filter_names[filt]} ($\theta={optimal_param:.1f}$)"
             else:
                 label = f"{filter_names[filt]} (optimal)"
         else:
             label = filter_names[filt]
-        plt.hist(mse_data[filt], bins=bins_mse, alpha=0.5, color=color_map[filt],
-                 label=label, linewidth=0)
+        plt.hist(mse_data[filt], bins=bins_mse, alpha=0.5,
+                 color=color_map[filt], label=label, linewidth=0)
         avg_mse = np.mean(mse_data[filt])
         plt.axvline(avg_mse, color=color_map[filt], linestyle='dashed', linewidth=1.5)
     plt.xlabel('Averaged MSE', fontsize=16)
     plt.ylabel('Frequency', fontsize=16)
-    plt.title('Histogram of Averaged MSE for Top 3 Filters', fontsize=16)
     plt.xticks(fontsize=14)
     plt.yticks(fontsize=14)
     plt.legend(fontsize=14)
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join("results", "estimator7", 'combined_histogram_mse.png'), dpi=300, bbox_inches='tight')
+    save_name = f"combined_histogram_mse{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
     plt.show()
 
-def plot_boxplots(phase2_data):
+def plot_boxplots(phase2_data, dist_suffix):
     filters = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
     filter_names = {
-        'finite': "KF (finite)",
-        'inf': "KF (infinite)",
+        'finite': "Time-varying KF",
+        'inf': "Time-invariant KF",
         'bcot': "BCOT",
         'risk': "Risk-Sensitive",
         'drkf_inf': "DRKF (ours)"
@@ -237,43 +244,106 @@ def plot_boxplots(phase2_data):
         cost_data_all.append(costs)
         mse_data_all.append(mses)
     
+    # Box plot for LQR cost
     plt.figure(figsize=(10,6))
-    bp1 = plt.boxplot(cost_data_all, patch_artist=True, medianprops={'linewidth':1}, boxprops={'linewidth':2})
-    # Use a consistent color palette.
+    bp1 = plt.boxplot(cost_data_all, patch_artist=True,
+                      medianprops={'linewidth':2}, boxprops={'linewidth':2})
     colors = ['tab:blue', 'tab:red', 'tab:orange', 'tab:gray', 'tab:green']
     for patch, color in zip(bp1['boxes'], colors):
         patch.set_facecolor(color)
     plt.xticks(range(1, len(filters)+1), [filter_names[f] for f in filters], fontsize=14)
     plt.xlabel('Filter', fontsize=16)
     plt.ylabel('LQR Cost', fontsize=16)
-    #plt.title('LQR Cost', fontsize=16)
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig(os.path.join("results", "estimator7", "boxplot_lqr_cost.png"), dpi=300, bbox_inches='tight')
+    save_name = f"boxplot_lqr_cost{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
     plt.show()
     
+    # Box plot for MSE
     plt.figure(figsize=(10,6))
-    bp2 = plt.boxplot(mse_data_all, patch_artist=True, medianprops={'linewidth':2}, boxprops={'linewidth':2})
+    bp2 = plt.boxplot(mse_data_all, patch_artist=True,
+                      medianprops={'linewidth':2}, boxprops={'linewidth':2})
     for patch, color in zip(bp2['boxes'], colors):
         patch.set_facecolor(color)
     plt.xticks(range(1, len(filters)+1), [filter_names[f] for f in filters], fontsize=14)
     plt.xlabel('Filter', fontsize=16)
     plt.ylabel('Averaged MSE', fontsize=16)
-    #plt.title('Averaged MSE', fontsize=16)
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig(os.path.join("results", "estimator7", "boxplot_mse.png"), dpi=300, bbox_inches='tight')
+    save_name = f"boxplot_mse{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
+    plt.show()
+
+def plot_violinplots(phase2_data, dist_suffix):
+    filters = ['finite', 'inf', 'bcot', 'risk', 'drkf_inf']
+    filter_names = {
+        'finite': "Time-varying KF",
+        'inf': "Time-invariant KF",
+        'bcot': "BCOT",
+        'risk': "Risk-Sensitive",
+        'drkf_inf': "DRKF (ours)"
+    }
+    cost_data_all = []
+    mse_data_all = []
+    for filt in filters:
+        experiments = phase2_data[filt]['raw_data']
+        costs = []
+        mses = []
+        for exp in experiments:
+            for run in exp:
+                costs.append(run[1])
+                mses.append(np.mean(run[0]['mse']))
+        cost_data_all.append(costs)
+        mse_data_all.append(mses)
+    
+    colors = ['tab:blue', 'tab:red', 'tab:orange', 'tab:gray', 'tab:green']
+    
+    # Violin plot for LQR cost
+    plt.figure(figsize=(10,6))
+    vp1 = plt.violinplot(cost_data_all, showmeans=True, showmedians=True, showextrema=True)
+    for i, pc in enumerate(vp1['bodies']):
+        pc.set_facecolor(colors[i])
+        pc.set_edgecolor('black')
+        pc.set_alpha(0.7)
+    plt.xticks(range(1, len(filters)+1), [filter_names[f] for f in filters], fontsize=14)
+    plt.xlabel('Filter', fontsize=18)
+    plt.ylabel('LQR Cost', fontsize=18)
+    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    save_name = f"violinplot_lqr_cost{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Violin plot for MSE
+    plt.figure(figsize=(10,6))
+    vp2 = plt.violinplot(mse_data_all, showmeans=True, showmedians=True, showextrema=True)
+    for i, pc in enumerate(vp2['bodies']):
+        pc.set_facecolor(colors[i])
+        pc.set_edgecolor('black')
+        pc.set_alpha(0.7)
+    plt.xticks(range(1, len(filters)+1), [filter_names[f] for f in filters], fontsize=14)
+    plt.xlabel('Filter', fontsize=18)
+    plt.ylabel('Average MSE', fontsize=18)
+    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    save_name = f"violinplot_mse{dist_suffix}.png"
+    plt.savefig(os.path.join("results", "estimator7", save_name), dpi=300, bbox_inches='tight')
     plt.show()
 
 def main(args):
     results_path = os.path.join(".", "results", "estimator7")
     phase2_data = load_data(results_path, args.dist, args.noise_dist)
+    # We'll use a suffix like "_normal" or "_quadratic" for file names
+    dist_suffix = f"_{args.dist}"
+    
     desired_traj, time = generate_desired_trajectory(args.time, args.trajectory)
     
-    plot_state_trajectories(phase2_data, desired_traj, time)
-    plot_histograms(phase2_data)
-    plot_boxplots(phase2_data)
-    
+    plot_state_trajectories(phase2_data, desired_traj, time, dist_suffix)
+    plot_histograms(phase2_data, dist_suffix)
+    plot_boxplots(phase2_data, dist_suffix)
+    plot_violinplots(phase2_data, dist_suffix)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dist', default="normal", type=str,
