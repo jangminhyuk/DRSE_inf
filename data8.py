@@ -1,7 +1,7 @@
 import pickle
 
 # Load the overall results from the saved pickle file.
-results_file = "./results/estimator8/overall_results_normal_normal.pkl"
+results_file = "./results/estimator8/overall_results_quadratic_quadratic.pkl"
 with open(results_file, 'rb') as f:
     overall_results = pickle.load(f)
 
