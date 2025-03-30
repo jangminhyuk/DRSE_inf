@@ -460,9 +460,9 @@ def run_experiment(exp_idx, dist, noise_dist, num_sim, seed_base, robust_val, T_
 def main(dist, noise_dist, num_sim, num_exp, T_total, trajectory):
     seed_base = 2024
     if dist=='normal':
-        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
     elif dist=='quadratic':
-        robust_vals = [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0]
+        robust_vals = [0.1, 0.2, 0.4, 0.5, 1.0, 2.0]
     desired_traj = generate_desired_trajectory(T_total, trajectory)
     
     # Define filters (the same keys are used for cost and state trajectories)
